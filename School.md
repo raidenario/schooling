@@ -46,10 +46,14 @@ Uma aula mínima de ponta a ponta: ação GOAP (embabel-clj) → chat Embabel/Sp
 
 ### Fase 1 — Núcleo de ensino (v1) — em construção (esqueleto vivo desde 2026-07-19)
 
-> Estado: `clojure -M:server` + `pnpm run dev -- <matéria>` funcionam. Provado ao vivo:
-> turno de missão (streaming + MISSION.md + evento) e transição para prova fria
-> (prova-fria.html gerada, sem gabarito). Implementados e ainda NÃO testados ao vivo:
-> coleta/correção da prova (diagnóstico + currículo) e ensino do módulo.
+> Estado (2026-07-19, repo github.com/raidenario/schooling): fluxo COMPLETO
+> implementado — missão → prova fria → diagnóstico/currículo → ensino → provas de
+> consolidação (com interleaving de itens fracos e adaptação score<70 → remediação)
+> → capstone, mais detour de pré-requisito nos prompts, histórico de conversa
+> persistente e reconexão do TUI. Provado ao vivo: turno de missão e geração da
+> prova fria. Falta o dogfood: estudar uma matéria real por uma semana só pelo TUI
+> (critério de pronto) — correção de provas, ensino e capstone ainda não rodaram
+> com LLM vivo.
 > Decisão de implementação: streaming para prosa, `create-edn!`/`ask` bloqueantes
 > (validados por malli, `:timeout-s` explícito) para tudo que vira arquivo —
 > tool-calling iniciado pelo modelo em streaming se mostrou não-determinístico

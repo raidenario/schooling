@@ -11,7 +11,8 @@
    free tier): STREAMING para a prosa da aula; create-edn!/ask BLOQUEANTES,
    validados por malli, para toda decisão e todo conteúdo que vira arquivo.
    Quem decide salvar é o código; o modelo produz o conteúdo."
-  (:require [clojure.string :as str]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [embabel-clj.blackboard :as bb]
             [embabel-clj.core :as ec]
             [embabel-clj.schema :as schema]
@@ -23,7 +24,39 @@
 
 (def model (or (System/getenv "SCHOOL_MODEL") "qwen/qwen3.5-397b-a17b"))
 
+;; ---------------------------------------------------------------------------
+;; histórico de conversa — sobrevive a restart (dado derivado, fora do OneDrive)
+;; ---------------------------------------------------------------------------
+
+(def ^:private history-dir
+  (io/file (or (System/getenv "SCHOOL_STATE_DIR")
+               (str (System/getenv "LOCALAPPDATA") "\\school"))
+           "history"))
+
 (defonce history (atom {})) ; slug -> [{:role :user|:assistant :text ...}]
+
+(defn- history-file ^java.io.File [slug]
+  (io/file history-dir (str slug ".edn")))
+
+(defn- get-history [slug]
+  (or (get @history slug)
+      (let [f (history-file slug)
+            h (if (.exists f)
+                (try (read-string (slurp f :encoding "UTF-8"))
+                     (catch Exception _ []))
+                [])]
+        (swap! history assoc slug h)
+        h)))
+
+(defn- append-history! [slug entries]
+  (let [h (into (get-history slug) entries)]
+    (swap! history assoc slug h)
+    (try
+      (io/make-parents (history-file slug))
+      (spit (history-file slug) (pr-str h) :encoding "UTF-8")
+      (catch Exception e
+        (binding [*out* *err*]
+          (println "append-history! falhou:" (.getMessage e)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; streaming (mecanismo do spike-gate) + chamadas estruturadas
@@ -88,14 +121,14 @@
                        (case role
                          :user      (UserMessage. ^String text)
                          :assistant (AssistantMessage. ^String text)))
-                     (get @history slug))
+                     (get-history slug))
                 [(UserMessage. ^String user-text)])))
 
 (defn- transcript
   "Transcrição compacta (últimas 12 mensagens + turno atual) para os prompts
    de decisão/extração."
   [slug user-text assistant-text]
-  (->> (concat (take-last 12 (get @history slug))
+  (->> (concat (take-last 12 (get-history slug))
                [{:role :user :text user-text}
                 {:role :assistant :text assistant-text}])
        (map (fn [{:keys [role text]}]
@@ -242,35 +275,175 @@
         r))))
 
 ;; ---------------------------------------------------------------------------
-;; estágio :ensino
+;; estágio :ensino — aula, prova de consolidação, adaptação
 ;; ---------------------------------------------------------------------------
 
-(def ^:private RecordCheck
+(def ^:private EnsinoCheck
   [:map
    [:registrar? {:description "true se o aprendiz demonstrou aprendizado ou erro relevante NESTE turno"}
     :boolean]
    [:titulo {:optional true :description "título curto do learning record"} :string]
-   [:conteudo {:optional true :description "markdown: o que aconteceu, evidência, implicação"} :string]])
+   [:conteudo {:optional true :description "markdown: o que aconteceu, evidência, implicação"} :string]
+   [:gerar-prova-modulo? {:description "true se o aprendiz pediu ou aceitou fazer a prova do módulo ativo NESTE turno"}
+    :boolean]])
+
+(defn- gerar-prova-modulo! [ctx subject resumo* slug m emit!]
+  (let [html (ask-conteudo! ctx
+               (str "Gere a PROVA DE CONSOLIDAÇÃO do módulo " (:nn m) " — "
+                    (:nome m) " da matéria \"" subject "\".\n\nDIAGNÓSTICO ATUAL:\n"
+                    (:diagnosis resumo*)
+                    "\n\nRegras: 6 a 8 questões numeradas (Q1..Qn) — recall + "
+                    "aplicação do módulo — MAIS 1-2 questões finais re-testando "
+                    "itens `fraco` de módulos anteriores do diagnóstico "
+                    "(interleaving), marcadas como [revisão]. PROIBIDO incluir "
+                    "respostas ou dicas. Formato: HTML completo self-contained, "
+                    "compacto (CSS mínimo, sem JavaScript)."))
+        p    (vault/write-file! subject (vault/module-prova-path m) html)]
+    (events/emit! :prova-modulo-gerada {:subject slug :modulo (vault/module-dir m)})
+    (emit! (str "📝 Prova do módulo " (:nn m) " gerada: " p
+                "\n\nAbra no navegador e mande as respostas aqui. A prova é "
+                "silenciosa: sem dicas até a correção."))))
+
+(defn- corrigir-modulo! [ctx subject resumo* slug m transcript* emit!]
+  (let [base (str "A prova de consolidação do módulo " (:nn m) " — " (:nome m)
+                  " da matéria \"" subject "\" foi respondida no chat.\n\nPROVA (HTML):\n"
+                  (apply vault/read-file subject (vault/module-prova-path m))
+                  "\n\nCONVERSA COM AS RESPOSTAS:\n" transcript*
+                  "\n\nCorreção FRIA: errado é errado, sem meio-certo.\n\n")
+        resultado (ask-conteudo! ctx
+                    (str base "Produza o prova-result.md: frontmatter (subject, "
+                         "date, modulo: " (vault/module-dir m) "), nota final em "
+                         "percentual (linha `score: NN%`), uma linha por questão "
+                         "(acertou/errou + resumo), incluindo as de [revisão]."))
+        _  (vault/write-file! subject (vault/module-result-path m) resultado)
+        _  (events/emit! :prova-corrigida {:subject slug :prova (vault/module-dir m)})
+        aprovado? (if-let [[_ n] (re-find #"score:\s*(\d+)" resultado)]
+                    (>= (parse-long n) 70)
+                    false)
+        diagnostico (ask-conteudo! ctx
+                      (str base "RESULTADO JÁ ESCRITO:\n" resultado
+                           "\n\nDIAGNÓSTICO ANTERIOR:\n" (:diagnosis resumo*)
+                           "\n\nREESCREVA o DIAGNOSIS.md inteiro (mesmo formato, "
+                           "last-assessment: modules/" (:nn m) ", updated: "
+                           (java.time.LocalDate/now) "): atualize níveis com a "
+                           "evidência nova (item `fraco` só vira `ok`/`forte` após "
+                           "dois acertos consecutivos), registre padrões de erro. "
+                           "Se os erros apontarem fundação faltante FORA da matéria, "
+                           "recomende o detour em Recomendações ativas — o aprendiz "
+                           "é soberano para recusar; se recusar, registre a recusa."))
+        _  (vault/write-file! subject vault/diagnosis-path diagnostico)
+        _  (events/emit! :diagnostico-escrito {:subject slug})
+        curriculo (ask-conteudo! ctx
+                    (str "CURRÍCULO ATUAL:\n" (:curriculum resumo*)
+                         "\n\nRESULTADO DA PROVA DO MÓDULO " (:nn m) ": "
+                         (if aprovado? "APROVADO (>= 70%)" "REPROVADO (< 70%)")
+                         "\n\nREESCREVA o CURRICULUM.md inteiro (mesmo formato): "
+                         (if aprovado?
+                           (str "módulo " (:nn m) " vira `status: passed`; o próximo "
+                                "pending vira `status: active`.")
+                           (str "módulo " (:nn m) " continua `status: active` e ganha "
+                                "uma linha `remediação:` descrevendo o passo extra "
+                                "antes de re-tentar a prova, baseado nos erros."))))
+        _  (vault/write-file! subject vault/curriculum-path curriculo)]
+    (events/emit! (if aprovado? :modulo-passou :modulo-reprovado)
+                  {:subject slug :modulo (vault/module-dir m)})
+    (events/emit! :curriculo-escrito {:subject slug})
+    (emit! (str "\n\n" (if aprovado? "✅ Módulo aprovado!" "📚 Ainda não foi dessa vez.")
+                " Diagnóstico e currículo atualizados; gabarito na correção acima. "
+                (if aprovado?
+                  "No próximo turno seguimos para o próximo módulo."
+                  "No próximo turno fazemos a remediação e re-tentamos.")))))
+
+(defn- turno-prova-modulo! [ctx subject resumo* user-text emit!]
+  (let [slug (vault/slugify subject)
+        m    (:modulo resumo*)
+        system (str (preamble resumo*)
+                    "ESTÁGIO: prova de consolidação do módulo " (:nn m) " — "
+                    (:nome m) " em andamento. A prova é SILENCIOSA: colete as "
+                    "respostas, não dê dicas, não ensine, não corrija ainda.")
+        r (stream! ctx (->messages system slug user-text) emit!)]
+    (when-not (:interrupted? r)
+      (let [{:keys [todas-respondidas?]}
+            (ask-edn! ctx {:schema* RespostasCheck
+                           :prompt (schema/edn-prompt RespostasCheck
+                                    {:preamble (str "Prova do módulo " (:nn m) " (HTML abaixo). "
+                                                    "O aprendiz respondeu no chat.\n\nPROVA:\n"
+                                                    (apply vault/read-file subject (vault/module-prova-path m))
+                                                    "\n\nCONVERSA:\n"
+                                                    (transcript slug user-text (:text r)))})})]
+        (when todas-respondidas?
+          (corrigir-modulo! ctx subject resumo* slug m
+                            (transcript slug user-text (:text r)) emit!))))
+    r))
 
 (defn- turno-ensino! [ctx subject resumo* user-text emit!]
+  (let [slug (vault/slugify subject)
+        m    (:modulo resumo*)]
+    (if (and m (:modulo-prova-gerada? resumo*) (not (:modulo-prova-corrigida? resumo*)))
+      (turno-prova-modulo! ctx subject resumo* user-text emit!)
+      (let [system (str (preamble resumo*)
+                        "ESTÁGIO: ensino do módulo ativo"
+                        (when m (str " (" (:nn m) " — " (:nome m) ")"))
+                        ".\n\nDIAGNÓSTICO:\n" (:diagnosis resumo*)
+                        "\n\nCURRÍCULO:\n" (:curriculum resumo*)
+                        "\n\nEnsine o módulo ativo na zona de desenvolvimento "
+                        "proximal: explicações curtas, exemplos, exercícios com "
+                        "feedback imediato. Cite o diagnóstico ao adaptar. Quando "
+                        "sentir o módulo consolidado, ofereça a prova de "
+                        "consolidação. Se notar fundação faltante FORA da matéria, "
+                        "recomende estudá-la antes — mas o aprendiz é soberano.")
+            r (stream! ctx (->messages system slug user-text) emit!)]
+        (when-not (:interrupted? r)
+          (let [{:keys [registrar? titulo conteudo gerar-prova-modulo?]}
+                (ask-edn! ctx {:schema* EnsinoCheck
+                               :prompt (schema/edn-prompt EnsinoCheck
+                                        {:preamble (str "Turno de aula da matéria \"" subject "\":\n\n"
+                                                        (transcript slug user-text (:text r)))
+                                         :extra "Registre com parcimônia: só demonstrações reais de aprendizado ou erro."})})]
+            (when (and registrar? titulo conteudo)
+              (vault/write-file! subject (vault/learning-record-path subject titulo) conteudo)
+              (events/emit! :learning-record {:subject slug :titulo titulo}))
+            (when (and gerar-prova-modulo? m)
+              (gerar-prova-modulo! ctx subject resumo* slug m emit!))))
+        r))))
+
+;; ---------------------------------------------------------------------------
+;; estágio :capstone
+;; ---------------------------------------------------------------------------
+
+(def ^:private CapstoneCheck
+  [:map
+   [:concluido? {:description "true se o aprendiz ENTREGOU o capstone e DEFENDEU as perguntas neste ponto da conversa"}
+    :boolean]
+   [:avaliacao {:optional true
+                :description "se concluído: capstone/avaliacao.md — veredito, forças, lacunas, evidência da defesa"}
+    :string]])
+
+(defn- turno-capstone! [ctx subject resumo* user-text emit!]
   (let [slug   (vault/slugify subject)
         system (str (preamble resumo*)
-                    "ESTÁGIO: ensino do módulo ativo.\n\nDIAGNÓSTICO:\n" (:diagnosis resumo*)
-                    "\n\nCURRÍCULO:\n" (:curriculum resumo*)
-                    "\n\nEnsine o módulo ativo na zona de desenvolvimento proximal: "
-                    "explicações curtas, exemplos, exercícios com feedback imediato. "
-                    "Cite o diagnóstico ao adaptar.")
+                    "ESTÁGIO: capstone — todos os módulos passados. Missão:\n"
+                    (:mission resumo*)
+                    "\n\nDIAGNÓSTICO:\n" (:diagnosis resumo*)
+                    "\n\nConduza o exame final: um entregável REAL julgado contra "
+                    "a missão, seguido de defesa (perguntas sobre o que o aprendiz "
+                    "construiu). Proponha o entregável se ainda não foi combinado; "
+                    "acompanhe; na defesa, pergunte com rigor.")
         r      (stream! ctx (->messages system slug user-text) emit!)]
     (when-not (:interrupted? r)
-      (let [{:keys [registrar? titulo conteudo]}
-            (ask-edn! ctx {:schema* RecordCheck
-                           :prompt (schema/edn-prompt RecordCheck
-                                    {:preamble (str "Turno de aula da matéria \"" subject "\":\n\n"
+      (let [{:keys [concluido? avaliacao]}
+            (ask-edn! ctx {:schema* CapstoneCheck
+                           :prompt (schema/edn-prompt CapstoneCheck
+                                    {:preamble (str "Capstone da matéria \"" subject "\" (missão + conversa):\n\nMISSÃO:\n"
+                                                    (:mission resumo*)
+                                                    "\n\nCONVERSA:\n"
                                                     (transcript slug user-text (:text r)))
-                                     :extra "Registre com parcimônia: só demonstrações reais de aprendizado ou erro."})})]
-        (when (and registrar? titulo conteudo)
-          (vault/write-file! subject (vault/learning-record-path subject titulo) conteudo)
-          (events/emit! :learning-record {:subject slug :titulo titulo}))))
+                                     :extra "concluido? só é true com entregável apresentado E defesa respondida."})})]
+        (when (and concluido? avaliacao)
+          (let [p (vault/write-file! subject ["capstone" "avaliacao.md"] avaliacao)]
+            (events/emit! :capstone-concluido {:subject slug})
+            (emit! (str "\n\n🎓 Capstone avaliado: " p
+                        " — o diagnóstico de saída entra na próxima revisão."))))))
     r))
 
 ;; ---------------------------------------------------------------------------
@@ -287,13 +460,13 @@
         resumo*   (vault/resumo subject) ; RELÊ o vault (ADR-0002)
         {:keys [text interrupted?]}
         (case (:stage resumo*)
-          :missao     (turno-missao! ctx subject resumo* user-text emit!)
-          :prova-fria (turno-prova!  ctx subject resumo* user-text emit!)
-          :ensino     (turno-ensino! ctx subject resumo* user-text emit!))]
-    (swap! history update slug
-           (fnil into [])
-           (cond-> [{:role :user :text user-text}]
-             (not (str/blank? (str text))) (conj {:role :assistant :text text})))
+          :missao     (turno-missao!   ctx subject resumo* user-text emit!)
+          :prova-fria (turno-prova!    ctx subject resumo* user-text emit!)
+          :ensino     (turno-ensino!   ctx subject resumo* user-text emit!)
+          :capstone   (turno-capstone! ctx subject resumo* user-text emit!))]
+    (append-history! slug
+                     (cond-> [{:role :user :text user-text}]
+                       (not (str/blank? (str text))) (conj {:role :assistant :text text})))
     (bb/put! ctx :interrupted? (boolean interrupted?))
     (bb/put! ctx :stage (name (:stage resumo*)))
     (bb/set-condition! ctx :respondido? true)))
@@ -309,7 +482,8 @@
     :description "professor adaptativo do School — missão, prova fria, ensino"
     :conditions [(stage-condition :estagio-missao? :missao)
                  (stage-condition :estagio-prova? :prova-fria)
-                 (stage-condition :estagio-ensino? :ensino)]
+                 (stage-condition :estagio-ensino? :ensino)
+                 (stage-condition :estagio-capstone? :capstone)]
     :goals   [{:name "turno-respondido" :pre [:respondido?] :value 1.0}]
     :actions [{:name "entrevistar-missao" :llm? true :retries 1
                :pre [:estagio-missao?] :post [:respondido?]
@@ -321,5 +495,9 @@
                :fn turno-fn}
               {:name "ensinar-modulo" :llm? true :retries 1
                :pre [:estagio-ensino?] :post [:respondido?]
-               :description "ensina o módulo ativo citando o diagnóstico"
+               :description "ensina o módulo ativo, aplica provas de consolidação e adapta"
+               :fn turno-fn}
+              {:name "conduzir-capstone" :llm? true :retries 1
+               :pre [:estagio-capstone?] :post [:respondido?]
+               :description "conduz o exame final: entregável real + defesa"
                :fn turno-fn}]}))

@@ -62,21 +62,58 @@
         n   (inc (count (or (.listFiles dir) [])))]
     ["learning-records" (format "%04d-%s.md" n (slugify titulo))]))
 
+;; -- módulos do currículo -----------------------------------------------------
+
+(defn parse-curriculum
+  "Módulos do CURRICULUM.md: cabeçalho `## NN — Nome` com `status: ...` em até
+   3 linhas abaixo. Tolerante a variações de travessão e caixa."
+  [subject]
+  (when-let [c (apply read-file subject curriculum-path)]
+    (let [linhas (vec (str/split-lines c))]
+      (->> (map-indexed vector linhas)
+           (keep (fn [[i l]]
+                   (when-let [[_ nn nome] (re-find #"^##\s*(\d+)\s*[—–-]+\s*(.+?)\s*$" l)]
+                     (let [status (some #(second (re-find #"(?i)status:\s*\**\s*(pending|active|passed|skipped)" %))
+                                        (subvec linhas (inc i)
+                                                (min (count linhas) (+ i 4))))]
+                       {:nn nn :nome (str/trim nome)
+                        :status (str/lower-case (or status "pending"))}))))
+           vec))))
+
+(defn active-module [subject]
+  (first (filter #(= "active" (:status %)) (parse-curriculum subject))))
+
+(defn module-dir ^String [{:keys [nn nome]}]
+  (str nn "-" (slugify nome)))
+
+(defn module-prova-path  [m] ["modules" (module-dir m) "prova.html"])
+(defn module-result-path [m] ["modules" (module-dir m) "prova-result.md"])
+
+(defn all-modules-done? [subject]
+  (let [ms (parse-curriculum subject)]
+    (boolean (and (seq ms)
+                  (every? #(contains? #{"passed" "skipped"} (:status %)) ms)))))
+
 (defn stage
   "Estágio inferido do estado dos arquivos — a base das pré-condições GOAP."
   [subject]
   (cond
     (not (apply exists? subject mission-path))   :missao
     (not (apply exists? subject diagnosis-path)) :prova-fria
+    (all-modules-done? subject)                  :capstone
     :else                                        :ensino))
 
 (defn resumo
   "Estado compacto da matéria para o system prompt do professor."
   [subject]
-  {:subject    subject
-   :stage      (stage subject)
-   :dir        (.getAbsolutePath (subject-dir subject))
-   :mission    (apply read-file subject mission-path)
-   :diagnosis  (apply read-file subject diagnosis-path)
-   :curriculum (apply read-file subject curriculum-path)
-   :prova-gerada? (apply exists? subject prova-fria-path)})
+  (let [m (active-module subject)]
+    {:subject    subject
+     :stage      (stage subject)
+     :dir        (.getAbsolutePath (subject-dir subject))
+     :mission    (apply read-file subject mission-path)
+     :diagnosis  (apply read-file subject diagnosis-path)
+     :curriculum (apply read-file subject curriculum-path)
+     :prova-gerada? (apply exists? subject prova-fria-path)
+     :modulo m
+     :modulo-prova-gerada?   (boolean (and m (apply exists? subject (module-prova-path m))))
+     :modulo-prova-corrigida? (boolean (and m (apply exists? subject (module-result-path m))))}))

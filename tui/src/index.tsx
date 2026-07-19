@@ -23,15 +23,24 @@ function App() {
   const streamRef = useRef<string | null>(null);
 
   useEffect(() => {
-    const sock = new WebSocket(URL);
-    ws.current = sock;
-    sock.on('open', () => {
-      if (SUBJECT) sock.send(JSON.stringify({type: 'start', subject: SUBJECT}));
-      setStatus('pronto');
-    });
-    sock.on('close', () => setStatus('desconectado'));
-    sock.on('error', (e: Error) => setStatus(`erro: ${e.message}`));
-    sock.on('message', (raw: Buffer) => {
+    let unmounted = false;
+    let sock: WebSocket;
+    const connect = () => {
+      sock = new WebSocket(URL);
+      ws.current = sock;
+      sock.on('open', () => {
+        if (SUBJECT) sock.send(JSON.stringify({type: 'start', subject: SUBJECT}));
+        setStatus('pronto');
+      });
+      sock.on('close', () => {
+        if (unmounted) return;
+        streamRef.current = null;
+        setStreaming(null);
+        setStatus('desconectado — reconectando em 2s…');
+        setTimeout(() => { if (!unmounted) connect(); }, 2000);
+      });
+      sock.on('error', (e: Error) => setStatus(`erro: ${e.message}`));
+      sock.on('message', (raw: Buffer) => {
       const msg = JSON.parse(raw.toString()) as Server;
       if (msg.type === 'token') {
         streamRef.current = (streamRef.current ?? '') + msg.text;
@@ -48,8 +57,10 @@ function App() {
       } else if ('text' in msg && msg.text) {
         setLog(l => [...l, {role: 'sistema', text: msg.text}]);
       }
-    });
-    return () => sock.close();
+      });
+    };
+    connect();
+    return () => { unmounted = true; sock?.close(); };
   }, []);
 
   useInput((_input, key) => {

@@ -16,6 +16,23 @@
   (let [[dir nome] (vault/learning-record-path "teste-x" "Primeiro Record")]
     (assert (= "learning-records" dir))
     (assert (= "0001-primeiro-record.md" nome) "numeração do learning record"))
+  ;; parser do currículo + estágio capstone
+  (vault/write-file! "teste-x" vault/curriculum-path
+                     (str "# Currículo\n\n## 01 — Fundamentos\nstatus: passed\n\n"
+                          "## 02 — Transducers Avançados\nstatus: active\nnotas...\n\n"
+                          "## 03 — Macros\nstatus: pending\n"))
+  (let [ms (vault/parse-curriculum "teste-x")]
+    (assert (= 3 (count ms)) "3 módulos parseados")
+    (assert (= ["passed" "active" "pending"] (mapv :status ms)) "statuses")
+    (assert (= "02" (:nn (vault/active-module "teste-x"))) "módulo ativo")
+    (assert (= "02-transducers-avancados" (vault/module-dir (vault/active-module "teste-x")))
+            "dir do módulo"))
+  (assert (not (vault/all-modules-done? "teste-x")) "ainda não terminou")
+  (assert (= :ensino (vault/stage "teste-x")) "estágio ensino")
+  (vault/write-file! "teste-x" vault/curriculum-path
+                     "## 01 — A\nstatus: passed\n\n## 02 — B\nstatus: skipped\n")
+  (assert (vault/all-modules-done? "teste-x") "tudo passou/skipped")
+  (assert (= :capstone (vault/stage "teste-x")) "estágio capstone")
   (events/emit! :teste {:subject "teste-x"})
   (let [es (events/entries)]
     (assert (pos? (count es)) "evento gravado")

@@ -2,8 +2,19 @@
   "Smoke offline das fns puras (vault + events) — sem LLM, sem Spring.
    Rodar com raiz de teste: SCHOOL_VAULT_ROOT/SCHOOL_EVENTS_FILE apontando
    para um diretório descartável, depois `clojure -M:smoke`."
-  (:require [school.events :as events]
+  (:require [clojure.string :as str]
+            [school.events :as events]
+            [school.prova :as prova]
             [school.vault :as vault]))
+
+(def ^:private prova-fixture
+  {:titulo "Prova de teste"
+   :questoes [{:id "q1" :enunciado "Quanto é 1+1?"
+               :alternativas [{:letra "a" :texto "2"} {:letra "b" :texto "3"}]
+               :correta "a" :explicacao "aritmética básica"}
+              {:id "q2" :enunciado "Quanto é 2+2?" :contexto "x = 2 + 2"
+               :alternativas [{:letra "a" :texto "5"} {:letra "b" :texto "4"}]
+               :correta "b" :explicacao "idem" :revisao true}]})
 
 (defn -main [& _]
   (assert (= "clojure-avancado" (vault/slugify "Clojure Avançado!")) "slugify")
@@ -38,5 +49,23 @@
     (assert (pos? (count es)) "evento gravado")
     (assert (= :teste (:event (last es))) "tipo do evento")
     (assert (:ts (last es)) "timestamp"))
-  (println "VAULT+EVENTS SMOKE PASS")
+  ;; entidade Prova (ADR-0007): renderer + correção em código
+  (let [html (prova/render-html prova-fixture "http://localhost:7777/respostas/x/fria")]
+    (assert (str/includes? html "CONCLUIR") "botão concluir")
+    (assert (str/includes? html "Ainda não sei") "opção não sei")
+    (assert (str/includes? html "justificativa") "campo justificativa")
+    (assert (str/includes? html "/respostas/x/fria") "post url")
+    (assert (not (str/includes? html "aritmética básica")) "gabarito NÃO vaza no HTML"))
+  (let [graded (prova/grade prova-fixture
+                            [{:id "q1" :alternativa "a" :justificativa "porque sim"}
+                             {:id "q2" :alternativa prova/NAO-SEI :justificativa ""}])]
+    (assert (= 50 (:score-pct graded)) "score em código")
+    (assert (= [true false] (mapv :acertou? (:itens graded))) "acertos")
+    (assert (:nao-sei? (second (:itens graded))) "não sei detectado")
+    (let [md (prova/resultado-md graded {:subject "teste-x" :prova-id "prova-fria"})]
+      (assert (str/includes? md "score: 50%") "score no resultado"))
+    (let [gab (prova/gabarito-html graded "Prova de teste")]
+      (assert (str/includes? gab "aritmética básica") "explicação no gabarito")
+      (assert (str/includes? gab "porque sim") "justificativa no gabarito")))
+  (println "VAULT+EVENTS+PROVA SMOKE PASS")
   (System/exit 0))

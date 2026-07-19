@@ -44,23 +44,30 @@
 (defn start!
   "Sobe o servidor. `on-user-msg` recebe [ch text] e decide o turno
    (tipicamente chamando start-turn!); `on-start` (opcional) recebe
-   [ch subject] quando o cliente abre uma matéria."
-  [{:keys [port on-user-msg on-start] :or {port 7777}}]
+   [ch subject] quando o cliente abre uma matéria; `http-handler`
+   (opcional) recebe requisições HTTP normais (provas interativas —
+   ADR-0007) e devolve um response map ring-style ou nil."
+  [{:keys [port on-user-msg on-start http-handler] :or {port 7777}}]
   (reset! server
           (http/run-server
            (fn [req]
-             (http/as-channel req
-               {:on-open    (fn [ch] (send! ch {:type "info" :text "conectado ao School"}))
-                :on-receive (fn [ch raw]
-                              (let [{:strs [type text subject]} (json/parse-string raw)]
-                                (case type
-                                  "start"     (if on-start
-                                                (on-start ch subject)
-                                                (send! ch {:type "info" :text "start ignorado"}))
-                                  "user_msg"  (on-user-msg ch text)
-                                  "interrupt" (interrupt! ch)
-                                  (send! ch {:type "error"
-                                             :text (str "tipo desconhecido: " type)}))))}))
+             (if (:websocket? req)
+               (http/as-channel req
+                 {:on-open    (fn [ch] (send! ch {:type "info" :text "conectado ao School"}))
+                  :on-receive (fn [ch raw]
+                                (let [{:strs [type text subject]} (json/parse-string raw)]
+                                  (case type
+                                    "start"     (if on-start
+                                                  (on-start ch subject)
+                                                  (send! ch {:type "info" :text "start ignorado"}))
+                                    "user_msg"  (on-user-msg ch text)
+                                    "interrupt" (interrupt! ch)
+                                    (send! ch {:type "error"
+                                               :text (str "tipo desconhecido: " type)}))))})
+               (or (when http-handler (http-handler req))
+                   {:status 404
+                    :headers {"Content-Type" "text/plain; charset=utf-8"}
+                    :body "não encontrado"})))
            {:port port}))
   (println (str "school ws://localhost:" port))
   port)

@@ -40,4 +40,8 @@
   :smoke {:extra-paths ["dev"]
           :main-opts   ["-m" "school.dev-smoke"]}
 
+  ;; renderiza a prova fria de uma matéria a partir do prova-fria.edn (teste)
+  :render-fixture {:extra-paths ["dev"]
+                   :main-opts   ["-m" "school.dev-render-fixture"]}
+
   :dev {:extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}}}}}

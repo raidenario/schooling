@@ -7,7 +7,8 @@
      :missao      — sem MISSION.md
      :prova-fria  — missão existe, sem DIAGNOSIS.md (prova gerada ou não)
      :ensino      — DIAGNOSIS.md + CURRICULUM.md existem"
-  (:require [clojure.java.io :as io]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as str]))
 
 (def root
@@ -55,12 +56,25 @@
 (defn exists? [subject & segs]
   (.exists (apply subject-file subject segs)))
 
+(defn read-edn
+  "Arquivo EDN do vault -> dados (ou nil). `segs` é o vetor de path,
+   simétrico a write-edn!."
+  [subject segs]
+  (when-let [s (apply read-file subject segs)]
+    (try (edn/read-string s) (catch Exception _ nil))))
+
+(defn write-edn! [subject segs data]
+  (write-file! subject segs (pr-str data)))
+
 ;; -- os arquivos do contrato --------------------------------------------------
 
 (def mission-path    ["MISSION.md"])
 (def diagnosis-path  ["DIAGNOSIS.md"])
 (def curriculum-path ["CURRICULUM.md"])
+(def calibragem-path ["calibragem.md"])
 (def prova-fria-path ["prova-fria.html"])
+(def prova-fria-edn-path       ["prova-fria.edn"])
+(def prova-fria-respostas-path ["prova-fria-respostas.edn"])
 (def prova-fria-resultado-path ["prova-fria-resultado.md"])
 (def gabarito-fria-path        ["gabarito-fria.html"])
 
@@ -95,8 +109,11 @@
 (defn module-dir ^String [{:keys [nn nome]}]
   (str nn "-" (slugify nome)))
 
-(defn module-prova-path  [m] ["modules" (module-dir m) "prova.html"])
-(defn module-result-path [m] ["modules" (module-dir m) "prova-result.md"])
+(defn module-prova-path     [m] ["modules" (module-dir m) "prova.html"])
+(defn module-prova-edn-path [m] ["modules" (module-dir m) "prova.edn"])
+(defn module-respostas-path [m] ["modules" (module-dir m) "prova-respostas.edn"])
+(defn module-gabarito-path  [m] ["modules" (module-dir m) "gabarito.html"])
+(defn module-result-path    [m] ["modules" (module-dir m) "prova-result.md"])
 
 (defn all-modules-done? [subject]
   (let [ms (parse-curriculum subject)]

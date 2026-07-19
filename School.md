@@ -58,6 +58,11 @@ Uma aula mínima de ponta a ponta: ação GOAP (embabel-clj) → chat Embabel/Sp
 > (validados por malli, `:timeout-s` explícito) para tudo que vira arquivo —
 > tool-calling iniciado pelo modelo em streaming se mostrou não-determinístico
 > no free tier (markup `<tool_call>` vazando como texto).
+> Provas são a entidade fixa do ADR-0007: LLM gera dados, renderer gamificado fixo
+> (vibe Duolingo, 'não sei' + justificativa + Concluir), servidas em
+> localhost:7777/prova/..., respostas por POST com correção automática em código
+> streamada no chat, calibragem pré-prova e modo consulta — fluxo interativo
+> completo provado ao vivo (PROVA-HTTP-TEST PASS).
 
 `school learn <matéria>` e `school continue <matéria>` no TUI, com paridade agent-schools: entrevista de missão → prova fria → DIAGNOSIS.md → CURRICULUM.md → ensino do módulo em chat → prova de consolidação → adaptação citando o diagnóstico. O backend já emite **eventos de domínio** (prova corrigida, módulo passou, status mudou) — sem consumidor ainda; é o gancho da Fase 2 ([ADR-0005](docs/adr/0005-dice-chronicle-memoria-do-professor.md)). Pronto quando: uma matéria real estudada por uma semana inteira só pelo TUI, com o vault legível no Obsidian e operável pelo Claude Code.
 

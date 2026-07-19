@@ -35,7 +35,19 @@ Avaliação inicial de uma matéria, feita sem ensino prévio, que semeia o diag
 Prova ao fim de um módulo — recall + aplicação, com re-teste de itens fracos de módulos anteriores.
 
 **Gabarito**:
-Documento pós-correção com cada questão, a resposta do aprendiz, a correta e a explicação.
+Documento pós-correção com cada questão, a resposta do aprendiz, a correta e a explicação. Vive no servidor até a correção — nunca dentro da prova.
+
+**Justificativa**:
+O "por quê" que o aprendiz escreve ao escolher uma alternativa — sinal de diagnóstico tão importante quanto o acerto.
+
+**Não sei**:
+Alternativa obrigatória em toda questão de prova; a dúvida honesta vale mais para o diagnóstico que o chute.
+
+**Calibragem**:
+Conversa pré-prova sobre conceitos-chave da matéria que dosa o nível da prova fria.
+
+**Modo consulta**:
+O comportamento do professor enquanto uma prova está aberta: orienta socraticamente, nunca dá a resposta.
 
 **Capstone**:
 O exame final de uma matéria: entregável real julgado contra a missão, seguido de defesa.

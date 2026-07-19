@@ -1,28 +1,29 @@
 (ns school.professor
   "O professor do School — Fase 1 (núcleo de ensino).
 
-   GOAP: três ações com pré-condições LAZY que releem o vault (ADR-0002 —
-   edição manual no Obsidian muda o plano no turno seguinte); o planner
-   escolhe a ação do estágio. Cada turno de conversa é um processo com goal
-   :respondido?.
+   GOAP: ações com pré-condições LAZY que releem o vault (ADR-0002); o
+   planner escolhe a ação do estágio. Cada turno de conversa é um processo
+   com goal :respondido?.
 
-   Divisão de trabalho com o LLM (lição do embabel-lab, confirmada aqui:
-   tool-calling iniciado pelo modelo em modo streaming vazou como texto no
-   free tier): STREAMING para a prosa da aula; create-edn!/ask BLOQUEANTES,
-   validados por malli, para toda decisão e todo conteúdo que vira arquivo.
-   Quem decide salvar é o código; o modelo produz o conteúdo."
+   Divisão de trabalho com o LLM: STREAMING para prosa; create-edn!/ask
+   BLOQUEANTES validados por malli para decisões e conteúdo de arquivo.
+   Provas são a entidade fixa de school.prova (ADR-0007): o LLM gera dados,
+   o renderer fixo gera o HTML gamificado, a correção de alternativas é
+   código, e durante uma prova aberta o chat entra em MODO CONSULTA."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [embabel-clj.blackboard :as bb]
             [embabel-clj.core :as ec]
             [embabel-clj.schema :as schema]
             [school.events :as events]
+            [school.prova :as prova]
             [school.vault :as vault])
   (:import [com.embabel.agent.api.streaming StreamingPromptRunnerBuilder]
            [com.embabel.chat AssistantMessage SystemMessage UserMessage]
            [java.util.concurrent CountDownLatch]))
 
 (def model (or (System/getenv "SCHOOL_MODEL") "qwen/qwen3.5-397b-a17b"))
+(def base-url (or (System/getenv "SCHOOL_PUBLIC_URL") "http://localhost:7777"))
 
 ;; ---------------------------------------------------------------------------
 ;; histórico de conversa — sobrevive a restart (dado derivado, fora do OneDrive)
@@ -92,18 +93,15 @@
         {:text (str acc) :interrupted? true}))))
 
 (defn- ask-edn!
-  "Decisão/extração estruturada, bloqueante, validada por malli (re-pergunta
-   com os erros em caso de resposta inválida)."
+  "Decisão/extração estruturada, bloqueante, validada por malli."
   [ctx {:keys [schema* prompt]}]
   (schema/create-edn! ctx {:schema schema* :llm model :max-tokens 4096
                            :timeout-s 180 :retries 2 :prompt prompt}))
 
 (defn- ask-conteudo!
-  "Conteúdo bruto de arquivo (markdown/HTML), bloqueante."
+  "Conteúdo bruto de arquivo (markdown), bloqueante. :timeout-s explícito —
+   o default de 60s do framework vira tempestade de retries no free tier."
   ^String [ctx prompt]
-  ;; conteúdo de arquivo demora mais que o timeout default de 60s do framework
-  ;; no free tier — :timeout-s evita a tempestade de retries (nota de campo
-  ;; do embabel-clj, paga de novo aqui)
   (-> (schema/ask ctx {:llm model :max-tokens 6144 :timeout-s 300
                        :prompt (str prompt "\n\nResponda SOMENTE com o conteúdo "
                                     "pedido, sem cercas de código, sem comentários "
@@ -125,8 +123,7 @@
                 [(UserMessage. ^String user-text)])))
 
 (defn- transcript
-  "Transcrição compacta (últimas 12 mensagens + turno atual) para os prompts
-   de decisão/extração."
+  "Transcrição compacta (últimas 12 mensagens + turno atual)."
   [slug user-text assistant-text]
   (->> (concat (take-last 12 (get-history slug))
                [{:role :user :text user-text}
@@ -153,11 +150,7 @@
               :description "se identificada: nome curto da matéria, ex: typescript, guitarra, calculo-1"}
     :string]])
 
-(defn- turno-sem-materia!
-  "Nenhuma matéria ativa: descobre da própria mensagem. Se identificar,
-   sinaliza no blackboard (o servidor abre a matéria e re-roda o turno já
-   no estágio de missão); senão, conversa perguntando o que estudar."
-  [ctx user-text emit!]
+(defn- turno-sem-materia! [ctx user-text emit!]
   (let [existentes (vault/list-subjects)
         {:keys [materia-identificada? materia]}
         (ask-edn! ctx {:schema* MateriaCheck
@@ -200,9 +193,9 @@
                     "descobrir a missão REAL (passar numa prova? entrevista? "
                     "construir algo? hobby?). Poucas perguntas, uma por vez. "
                     "Quando estiver clara — pode ser já na primeira mensagem — "
-                    "confirme a missão em uma frase e diga que vai registrá-la "
-                    "e que o próximo passo é a prova fria. NÃO invente detalhes "
-                    "que o aprendiz não deu.")
+                    "confirme a missão em uma frase e diga que vai registrá-la. "
+                    "O próximo passo será uma conversa curta de calibragem. NÃO "
+                    "invente detalhes que o aprendiz não deu.")
         r      (stream! ctx (->messages system slug user-text) emit!)]
     (when-not (:interrupted? r)
       (let [{:keys [missao-clara? conteudo]}
@@ -220,102 +213,145 @@
           (let [p (vault/write-file! subject vault/mission-path conteudo)]
             (events/emit! :missao-definida {:subject slug})
             (emit! (str "\n\n✅ Missão registrada em " p
-                        "\nPróximo passo: a prova fria. Diga \"pronto\" quando quiser começar."))))))
+                        "\nAgora vamos calibrar: vou te fazer algumas perguntas "
+                        "rápidas sobre o que você já conhece."))))))
     r))
 
 ;; ---------------------------------------------------------------------------
-;; estágio :prova-fria
+;; estágio :prova-fria — calibragem → geração → consulta → correção
 ;; ---------------------------------------------------------------------------
 
-(def ^:private RespostasCheck
+(def ^:private CalibragemCheck
   [:map
-   [:todas-respondidas? {:description "true se o aprendiz já enviou respostas para TODAS as questões da prova"}
-    :boolean]])
+   [:calibragem-completa? {:description "true se já há noção suficiente do que o aprendiz conhece dos conceitos-chave para dosar a prova fria"}
+    :boolean]
+   [:resumo {:optional true
+             :description "se completa: calibragem.md — lista dos conceitos-chave e o que o aprendiz declarou conhecer/desconhecer de cada um"}
+    :string]])
 
-(defn- gerar-prova! [ctx subject resumo* emit!]
+(defn- turno-calibragem! [ctx subject resumo* user-text emit!]
+  (let [slug   (vault/slugify subject)
+        system (str (preamble resumo*)
+                    "ESTÁGIO: calibragem pré-prova. Missão:\n" (:mission resumo*)
+                    "\n\nDescubra o nível REAL do aprendiz ANTES da prova fria: "
+                    "pergunte sobre os conceitos-chave da matéria (ex.: para rust — "
+                    "ownership, borrowing, lifetimes, você já usou linguagem com GC?), "
+                    "2-3 conceitos por mensagem, tom leve, sem ensinar ainda. "
+                    "'Nunca ouvi falar' é resposta perfeita — é para isso que serve. "
+                    "Em 1-3 trocas você deve ter o suficiente.")
+        r      (stream! ctx (->messages system slug user-text) emit!)]
+    (when-not (:interrupted? r)
+      (let [{:keys [calibragem-completa? resumo]}
+            (ask-edn! ctx {:schema* CalibragemCheck
+                           :prompt (schema/edn-prompt CalibragemCheck
+                                    {:preamble (str "Conversa de calibragem da matéria \""
+                                                    subject "\":\n\n"
+                                                    (transcript slug user-text (:text r)))})})]
+        (when (and calibragem-completa? (not (str/blank? (str resumo))))
+          (vault/write-file! subject vault/calibragem-path resumo)
+          (events/emit! :calibragem-registrada {:subject slug})
+          (emit! "\n\n🎯 Calibragem registrada. No próximo turno eu gero sua prova fria — diga \"pode gerar\" quando quiser."))))
+    r))
+
+(defn- consulta-system [resumo* que-prova]
+  (str (preamble resumo*)
+       "MODO CONSULTA — a " que-prova " está ABERTA no navegador do aprendiz. "
+       "REGRA ABSOLUTA: NUNCA dê a resposta de nenhuma questão, NUNCA elimine "
+       "alternativas, NUNCA confirme nem negue um palpite. Oriente socraticamente: "
+       "faça perguntas que levem o aprendiz a raciocinar até chegar sozinho; "
+       "relembre conceitos gerais sem conectá-los à questão específica. Incentive "
+       "o 🤷 'não sei' honesto — vale mais para o diagnóstico que um chute. As "
+       "respostas chegam pelo botão CONCLUIR da página, não por aqui."))
+
+(defn- gerar-prova-fria! [ctx subject resumo* emit!]
   (let [slug (vault/slugify subject)
-        html (ask-conteudo! ctx
-               (str "Gere a PROVA FRIA da matéria \"" subject "\" para esta missão:\n\n"
-                    (:mission resumo*)
-                    "\n\nRegras: exatamente 8 questões-cenário numeradas (Q1..Q8), da "
-                    "mais fácil à mais difícil, ponderadas pela missão; uma questão "
-                    "por seção. PROIBIDO incluir respostas, gabarito ou dicas. "
-                    "Formato: um documento HTML completo e self-contained, COMPACTO "
-                    "(CSS mínimo embutido, tipografia limpa, sem JavaScript)."))
-        p    (vault/write-file! subject vault/prova-fria-path html)]
+        p    (prova/gerar! ctx {:llm model
+                                :titulo (str "Prova fria — " subject)
+                                :n-questoes 8
+                                :contexto (str "MATÉRIA: " subject
+                                               "\n\nMISSÃO:\n" (:mission resumo*)
+                                               "\n\nCALIBRAGEM (o que o aprendiz declarou conhecer):\n"
+                                               (apply vault/read-file subject vault/calibragem-path))})
+        _    (vault/write-edn! subject vault/prova-fria-edn-path p)
+        html (prova/render-html p (str base-url "/respostas/" slug "/fria"))
+        _    (vault/write-file! subject vault/prova-fria-path html)]
     (events/emit! :prova-fria-gerada {:subject slug})
-    (emit! (str "📝 Prova fria gerada: " p
-                "\n\nAbra o arquivo no navegador, responda no seu ritmo e mande as "
-                "respostas aqui no chat — todas de uma vez (Q1: ..., Q2: ...) ou uma a uma. "
-                "A prova é silenciosa: não vou dar dicas até a correção."))
+    (emit! (str "📝 Prova fria pronta!\n\n👉 Abra: " base-url "/prova/" slug "/fria\n\n"
+                (count (:questoes p)) " questões de alternativa, com justificativa e a opção "
+                "🤷 não sei (use sem medo — dúvida honesta vale mais que chute). Enquanto "
+                "a prova estiver aberta eu fico em modo consulta: posso orientar seu "
+                "raciocínio, mas nunca dou a resposta. Ao final, clique em CONCLUIR."))
     {:text "" :interrupted? false}))
 
-(defn- corrigir! [ctx subject resumo* slug prova-html transcript* emit!]
-  (let [base (str "A prova fria da matéria \"" subject "\" (missão abaixo) foi "
-                  "respondida pelo aprendiz no chat.\n\nMISSÃO:\n" (:mission resumo*)
-                  "\n\nPROVA (HTML):\n" prova-html
-                  "\n\nCONVERSA COM AS RESPOSTAS:\n" transcript*
-                  "\n\nCorreção FRIA: errado é errado, sem meio-certo.\n\n")
-        resultado (ask-conteudo! ctx (str base "Produza o prova-fria-resultado.md: "
-                                          "frontmatter (subject, date, prova: prova-fria), "
-                                          "nota final, e uma linha por questão (acertou/errou + resumo)."))
-        _  (vault/write-file! subject vault/prova-fria-resultado-path resultado)
-        gabarito (ask-conteudo! ctx (str base "Produza o GABARITO como HTML self-contained: "
-                                         "para cada questão — enunciado, resposta do aprendiz, "
-                                         "resposta correta, explicação curta."))
-        _  (vault/write-file! subject vault/gabarito-fria-path gabarito)
-        _  (events/emit! :prova-corrigida {:subject slug :prova "prova-fria"})
-        diagnostico (ask-conteudo! ctx
-                      (str base "Produza o DIAGNOSIS.md EXATAMENTE neste formato "
-                           "(níveis: forte/ok/fraco/não-avaliado; TODA linha do mapa "
-                           "cita evidência tipo `prova-fria q3, q5`; máx ~60 linhas):\n\n"
-                           "---\nsubject: " slug "\nupdated: " (java.time.LocalDate/now)
-                           "\nlast-assessment: prova-fria\noverall: iniciante | básico | intermediário | avançado\n---\n\n"
-                           "# Diagnóstico — " subject "\n\n## Resumo\n(2-3 frases)\n\n"
-                           "## Mapa de competências\n| Competência | Nível | Evidência |\n|---|---|---|\n\n"
-                           "## Padrões de erro\n\n## Recomendações ativas"))
-        _  (vault/write-file! subject vault/diagnosis-path diagnostico)
-        _  (events/emit! :diagnostico-escrito {:subject slug})
-        curriculo (ask-conteudo! ctx
-                    (str base "DIAGNÓSTICO JÁ ESCRITO:\n" diagnostico
-                         "\n\nProduza o CURRICULUM.md: 4-8 módulos ordenados por "
-                         "dependência (`## NN — Nome` + linha `status: pending|active|skipped`), "
-                         "o primeiro módulo não-skipped como active, skipped SOMENTE com "
-                         "evidência da prova fria; cada módulo termina numa prova de consolidação."))
-        p  (vault/write-file! subject vault/curriculum-path curriculo)]
+(defn- diagnostico-prompt [subject slug graded calibragem last-assessment diagnostico-anterior]
+  (str "Prova corrigida da matéria \"" subject "\" (correção feita por código; "
+       "score " (:score-pct graded) "%, " (:acertos graded) "/" (:total graded) ").\n\n"
+       "ITENS (com justificativas do aprendiz — use-as: erro confiante ≠ dúvida honesta; "
+       "'não sei' é lacuna declarada, não erro de raciocínio):\n"
+       (pr-str (:itens graded))
+       (when calibragem (str "\n\nCALIBRAGEM:\n" calibragem))
+       (when diagnostico-anterior (str "\n\nDIAGNÓSTICO ANTERIOR:\n" diagnostico-anterior))
+       "\n\nProduza o DIAGNOSIS.md EXATAMENTE neste formato (níveis: "
+       "forte/ok/fraco/não-avaliado; TODA linha do mapa cita evidência tipo `"
+       last-assessment " q3, q5`; item `fraco` só sobe após dois acertos "
+       "consecutivos; máx ~60 linhas). Se os erros apontarem fundação faltante "
+       "FORA da matéria, recomende o detour em Recomendações ativas — o aprendiz "
+       "é soberano; se ele já recusou antes, registre e não re-litigue:\n\n"
+       "---\nsubject: " slug "\nupdated: " (java.time.LocalDate/now)
+       "\nlast-assessment: " last-assessment
+       "\noverall: iniciante | básico | intermediário | avançado\n---\n\n"
+       "# Diagnóstico — " subject "\n\n## Resumo\n(2-3 frases)\n\n"
+       "## Mapa de competências\n| Competência | Nível | Evidência |\n|---|---|---|\n\n"
+       "## Padrões de erro\n\n## Recomendações ativas"))
+
+(defn- corrigir-fria! [ctx subject resumo* emit!]
+  (let [slug     (vault/slugify subject)
+        p        (vault/read-edn subject vault/prova-fria-edn-path)
+        resps    (vault/read-edn subject vault/prova-fria-respostas-path)
+        graded   (prova/grade p resps)
+        _        (vault/write-file! subject vault/prova-fria-resultado-path
+                                    (prova/resultado-md graded {:subject slug :prova-id "prova-fria"}))
+        _        (vault/write-file! subject vault/gabarito-fria-path
+                                    (prova/gabarito-html graded (:titulo p)))
+        _        (events/emit! :prova-corrigida {:subject slug :prova "prova-fria"
+                                                 :score (:score-pct graded)})
+        _        (emit! (str "📊 Corrigido: " (:acertos graded) "/" (:total graded)
+                             " (" (:score-pct graded) "%). Gabarito: " base-url
+                             "/gabarito/" slug "/fria\n\nEscrevendo seu diagnóstico…"))
+        diag     (ask-conteudo! ctx (diagnostico-prompt subject slug graded
+                                     (apply vault/read-file subject vault/calibragem-path)
+                                     "prova-fria" nil))
+        _        (vault/write-file! subject vault/diagnosis-path diag)
+        _        (events/emit! :diagnostico-escrito {:subject slug})
+        curric   (ask-conteudo! ctx
+                   (str "MISSÃO:\n" (:mission resumo*) "\n\nDIAGNÓSTICO:\n" diag
+                        "\n\nProduza o CURRICULUM.md: 4-8 módulos ordenados por "
+                        "dependência (`## NN — Nome` + linha `status: pending|active|skipped`), "
+                        "o primeiro não-skipped como active, skipped SOMENTE com evidência "
+                        "da prova fria; cada módulo termina numa prova de consolidação."))
+        _        (vault/write-file! subject vault/curriculum-path curric)]
     (events/emit! :curriculo-escrito {:subject slug})
-    (emit! (str "\n\n✅ Correção completa. Diagnóstico e currículo escritos (" p ").\n"
-                "Gabarito: abra gabarito-fria.html. No próximo turno começamos o módulo ativo — "
-                "ou me peça para ajustar o plano."))))
+    (emit! (str "\n\n✅ Diagnóstico e currículo prontos (veja no Obsidian). "
+                "No próximo turno começamos o módulo ativo — ou me peça para ajustar o plano."))
+    {:text "" :interrupted? false}))
 
 (defn- turno-prova! [ctx subject resumo* user-text emit!]
-  (let [slug (vault/slugify subject)]
-    (if-not (:prova-gerada? resumo*)
-      (gerar-prova! ctx subject resumo* emit!)
-      (let [system (str (preamble resumo*)
-                        "ESTÁGIO: prova fria em andamento — o aprendiz está "
-                        "respondendo no chat. A prova é SILENCIOSA: colete as "
-                        "respostas, não dê dicas, não ensine, não corrija ainda. "
-                        "Confirme o recebimento e diga quantas faltam, se souber.")
-            r (stream! ctx (->messages system slug user-text) emit!)]
-        (when-not (:interrupted? r)
-          (let [{:keys [todas-respondidas?]}
-                (ask-edn! ctx {:schema* RespostasCheck
-                               :prompt (schema/edn-prompt RespostasCheck
-                                        {:preamble (str "Prova fria da matéria \"" subject "\" "
-                                                        "(HTML abaixo). O aprendiz respondeu no chat.\n\nPROVA:\n"
-                                                        (apply vault/read-file subject vault/prova-fria-path)
-                                                        "\n\nCONVERSA:\n"
-                                                        (transcript slug user-text (:text r)))})})]
-            (when todas-respondidas?
-              (corrigir! ctx subject resumo* slug
-                         (apply vault/read-file subject vault/prova-fria-path)
-                         (transcript slug user-text (:text r))
-                         emit!))))
-        r))))
+  (cond
+    (not (apply vault/exists? subject vault/calibragem-path))
+    (turno-calibragem! ctx subject resumo* user-text emit!)
+
+    (not (apply vault/exists? subject vault/prova-fria-edn-path))
+    (gerar-prova-fria! ctx subject resumo* emit!)
+
+    (not (apply vault/exists? subject vault/prova-fria-respostas-path))
+    (let [slug (vault/slugify subject)]
+      (stream! ctx (->messages (consulta-system resumo* "prova fria") slug user-text) emit!))
+
+    :else
+    (corrigir-fria! ctx subject resumo* emit!)))
 
 ;; ---------------------------------------------------------------------------
-;; estágio :ensino — aula, prova de consolidação, adaptação
+;; estágio :ensino — aula, prova de consolidação (entidade), adaptação
 ;; ---------------------------------------------------------------------------
 
 (def ^:private EnsinoCheck
@@ -328,99 +364,85 @@
     :boolean]])
 
 (defn- gerar-prova-modulo! [ctx subject resumo* slug m emit!]
-  (let [html (ask-conteudo! ctx
-               (str "Gere a PROVA DE CONSOLIDAÇÃO do módulo " (:nn m) " — "
-                    (:nome m) " da matéria \"" subject "\".\n\nDIAGNÓSTICO ATUAL:\n"
-                    (:diagnosis resumo*)
-                    "\n\nRegras: 6 a 8 questões numeradas (Q1..Qn) — recall + "
-                    "aplicação do módulo — MAIS 1-2 questões finais re-testando "
-                    "itens `fraco` de módulos anteriores do diagnóstico "
-                    "(interleaving), marcadas como [revisão]. PROIBIDO incluir "
-                    "respostas ou dicas. Formato: HTML completo self-contained, "
-                    "compacto (CSS mínimo, sem JavaScript)."))
-        p    (vault/write-file! subject (vault/module-prova-path m) html)]
+  (let [p    (prova/gerar! ctx {:llm model
+                                :titulo (str "Prova — módulo " (:nn m) ": " (:nome m))
+                                :n-questoes 7
+                                :contexto (str "MATÉRIA: " subject
+                                               "\nMÓDULO: " (:nn m) " — " (:nome m)
+                                               "\n\nDIAGNÓSTICO:\n" (:diagnosis resumo*)
+                                               "\n\nRegra extra: as ÚLTIMAS 1-2 questões devem "
+                                               "re-testar itens `fraco` de módulos anteriores do "
+                                               "diagnóstico, com :revisao true (interleaving).")})
+        _    (vault/write-edn! subject (vault/module-prova-edn-path m) p)
+        html (prova/render-html p (str base-url "/respostas/" slug "/modulo/" (vault/module-dir m)))
+        _    (vault/write-file! subject (vault/module-prova-path m) html)]
     (events/emit! :prova-modulo-gerada {:subject slug :modulo (vault/module-dir m)})
-    (emit! (str "📝 Prova do módulo " (:nn m) " gerada: " p
-                "\n\nAbra no navegador e mande as respostas aqui. A prova é "
-                "silenciosa: sem dicas até a correção."))))
+    (emit! (str "\n\n📝 Prova do módulo " (:nn m) " pronta!\n👉 Abra: " base-url
+                "/prova/" slug "/modulo/" (vault/module-dir m)
+                "\nEnquanto ela estiver aberta fico em modo consulta. Ao final, CONCLUIR."))))
 
-(defn- corrigir-modulo! [ctx subject resumo* slug m transcript* emit!]
-  (let [base (str "A prova de consolidação do módulo " (:nn m) " — " (:nome m)
-                  " da matéria \"" subject "\" foi respondida no chat.\n\nPROVA (HTML):\n"
-                  (apply vault/read-file subject (vault/module-prova-path m))
-                  "\n\nCONVERSA COM AS RESPOSTAS:\n" transcript*
-                  "\n\nCorreção FRIA: errado é errado, sem meio-certo.\n\n")
-        resultado (ask-conteudo! ctx
-                    (str base "Produza o prova-result.md: frontmatter (subject, "
-                         "date, modulo: " (vault/module-dir m) "), nota final em "
-                         "percentual (linha `score: NN%`), uma linha por questão "
-                         "(acertou/errou + resumo), incluindo as de [revisão]."))
-        _  (vault/write-file! subject (vault/module-result-path m) resultado)
-        _  (events/emit! :prova-corrigida {:subject slug :prova (vault/module-dir m)})
-        aprovado? (if-let [[_ n] (re-find #"score:\s*(\d+)" resultado)]
-                    (>= (parse-long n) 70)
-                    false)
-        diagnostico (ask-conteudo! ctx
-                      (str base "RESULTADO JÁ ESCRITO:\n" resultado
-                           "\n\nDIAGNÓSTICO ANTERIOR:\n" (:diagnosis resumo*)
-                           "\n\nREESCREVA o DIAGNOSIS.md inteiro (mesmo formato, "
-                           "last-assessment: modules/" (:nn m) ", updated: "
-                           (java.time.LocalDate/now) "): atualize níveis com a "
-                           "evidência nova (item `fraco` só vira `ok`/`forte` após "
-                           "dois acertos consecutivos), registre padrões de erro. "
-                           "Se os erros apontarem fundação faltante FORA da matéria, "
-                           "recomende o detour em Recomendações ativas — o aprendiz "
-                           "é soberano para recusar; se recusar, registre a recusa."))
-        _  (vault/write-file! subject vault/diagnosis-path diagnostico)
+(defn- corrigir-modulo! [ctx subject resumo* slug m emit!]
+  (let [p        (vault/read-edn subject (vault/module-prova-edn-path m))
+        resps    (vault/read-edn subject (vault/module-respostas-path m))
+        graded   (prova/grade p resps)
+        aprovado? (>= (:score-pct graded) 70)
+        _  (vault/write-file! subject (vault/module-result-path m)
+                              (prova/resultado-md graded {:subject slug :prova-id (vault/module-dir m)}))
+        _  (vault/write-file! subject (vault/module-gabarito-path m)
+                              (prova/gabarito-html graded (:titulo p)))
+        _  (events/emit! :prova-corrigida {:subject slug :prova (vault/module-dir m)
+                                           :score (:score-pct graded)})
+        _  (emit! (str "📊 Corrigido: " (:acertos graded) "/" (:total graded)
+                       " (" (:score-pct graded) "%). Gabarito: " base-url
+                       "/gabarito/" slug "/modulo/" (vault/module-dir m)
+                       "\n\nAtualizando diagnóstico e currículo…"))
+        diag (ask-conteudo! ctx (diagnostico-prompt subject slug graded nil
+                                 (str "modules/" (:nn m)) (:diagnosis resumo*)))
+        _  (vault/write-file! subject vault/diagnosis-path diag)
         _  (events/emit! :diagnostico-escrito {:subject slug})
-        curriculo (ask-conteudo! ctx
-                    (str "CURRÍCULO ATUAL:\n" (:curriculum resumo*)
-                         "\n\nRESULTADO DA PROVA DO MÓDULO " (:nn m) ": "
-                         (if aprovado? "APROVADO (>= 70%)" "REPROVADO (< 70%)")
-                         "\n\nREESCREVA o CURRICULUM.md inteiro (mesmo formato): "
-                         (if aprovado?
-                           (str "módulo " (:nn m) " vira `status: passed`; o próximo "
-                                "pending vira `status: active`.")
-                           (str "módulo " (:nn m) " continua `status: active` e ganha "
-                                "uma linha `remediação:` descrevendo o passo extra "
-                                "antes de re-tentar a prova, baseado nos erros."))))
-        _  (vault/write-file! subject vault/curriculum-path curriculo)]
+        curric (ask-conteudo! ctx
+                 (str "CURRÍCULO ATUAL:\n" (:curriculum resumo*)
+                      "\n\nRESULTADO DO MÓDULO " (:nn m) ": "
+                      (if aprovado? "APROVADO (>= 70%)" "REPROVADO (< 70%)")
+                      " — score " (:score-pct graded) "%."
+                      "\n\nREESCREVA o CURRICULUM.md inteiro (mesmo formato): "
+                      (if aprovado?
+                        (str "módulo " (:nn m) " vira `status: passed`; o próximo "
+                             "pending vira `status: active`.")
+                        (str "módulo " (:nn m) " continua `status: active` e ganha uma "
+                             "linha `remediação:` com o passo extra antes de re-tentar, "
+                             "baseado nos erros."))))
+        _  (vault/write-file! subject vault/curriculum-path curric)]
     (events/emit! (if aprovado? :modulo-passou :modulo-reprovado)
                   {:subject slug :modulo (vault/module-dir m)})
     (events/emit! :curriculo-escrito {:subject slug})
+    ;; prova encerrada: respostas arquivadas no resultado; libera nova tentativa
+    (when-not aprovado?
+      (let [f (apply vault/subject-file subject (vault/module-respostas-path m))
+            g (apply vault/subject-file subject (vault/module-prova-edn-path m))]
+        (.delete f) (.delete g)
+        (.delete (apply vault/subject-file subject (vault/module-prova-path m)))))
     (emit! (str "\n\n" (if aprovado? "✅ Módulo aprovado!" "📚 Ainda não foi dessa vez.")
-                " Diagnóstico e currículo atualizados; gabarito na correção acima. "
                 (if aprovado?
-                  "No próximo turno seguimos para o próximo módulo."
-                  "No próximo turno fazemos a remediação e re-tentamos.")))))
-
-(defn- turno-prova-modulo! [ctx subject resumo* user-text emit!]
-  (let [slug (vault/slugify subject)
-        m    (:modulo resumo*)
-        system (str (preamble resumo*)
-                    "ESTÁGIO: prova de consolidação do módulo " (:nn m) " — "
-                    (:nome m) " em andamento. A prova é SILENCIOSA: colete as "
-                    "respostas, não dê dicas, não ensine, não corrija ainda.")
-        r (stream! ctx (->messages system slug user-text) emit!)]
-    (when-not (:interrupted? r)
-      (let [{:keys [todas-respondidas?]}
-            (ask-edn! ctx {:schema* RespostasCheck
-                           :prompt (schema/edn-prompt RespostasCheck
-                                    {:preamble (str "Prova do módulo " (:nn m) " (HTML abaixo). "
-                                                    "O aprendiz respondeu no chat.\n\nPROVA:\n"
-                                                    (apply vault/read-file subject (vault/module-prova-path m))
-                                                    "\n\nCONVERSA:\n"
-                                                    (transcript slug user-text (:text r)))})})]
-        (when todas-respondidas?
-          (corrigir-modulo! ctx subject resumo* slug m
-                            (transcript slug user-text (:text r)) emit!))))
-    r))
+                  " No próximo turno seguimos para o próximo módulo."
+                  " Vamos fazer a remediação e depois gero uma prova nova.")))
+    {:text "" :interrupted? false}))
 
 (defn- turno-ensino! [ctx subject resumo* user-text emit!]
   (let [slug (vault/slugify subject)
         m    (:modulo resumo*)]
-    (if (and m (:modulo-prova-gerada? resumo*) (not (:modulo-prova-corrigida? resumo*)))
-      (turno-prova-modulo! ctx subject resumo* user-text emit!)
+    (cond
+      (and m (apply vault/exists? subject (vault/module-respostas-path m))
+             (not (apply vault/exists? subject (vault/module-result-path m))))
+      (corrigir-modulo! ctx subject resumo* slug m emit!)
+
+      (and m (apply vault/exists? subject (vault/module-prova-edn-path m))
+             (not (apply vault/exists? subject (vault/module-result-path m))))
+      (stream! ctx (->messages (consulta-system resumo* (str "prova do módulo " (:nn m)))
+                               slug user-text)
+               emit!)
+
+      :else
       (let [system (str (preamble resumo*)
                         "ESTÁGIO: ensino do módulo ativo"
                         (when m (str " (" (:nn m) " — " (:nome m) ")"))
@@ -525,7 +547,7 @@
 (defn professor []
   (ec/agent
    {:name        "professor-school"
-    :description "professor adaptativo do School — missão, prova fria, ensino"
+    :description "professor adaptativo do School — missão, calibragem, provas, ensino, capstone"
     :conditions [{:name :sem-materia?
                   :fn (fn [ctx] (str/blank? (str (bb/fetch ctx :subject))))}
                  (stage-condition :estagio-missao? :missao)
@@ -543,7 +565,7 @@
                :fn turno-fn}
               {:name "conduzir-prova-fria" :llm? true :retries 1
                :pre [:estagio-prova?] :post [:respondido?]
-               :description "gera, aplica e corrige a prova fria; escreve diagnóstico e currículo"
+               :description "calibra, gera a prova fria interativa, consulta e corrige"
                :fn turno-fn}
               {:name "ensinar-modulo" :llm? true :retries 1
                :pre [:estagio-ensino?] :post [:respondido?]

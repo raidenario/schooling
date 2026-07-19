@@ -26,6 +26,15 @@
 (defn subject-dir ^java.io.File [subject]
   (io/file root (slugify subject)))
 
+(defn list-subjects
+  "Matérias existentes (nomes de diretório sob a raiz do school)."
+  []
+  (let [d (io/file root)]
+    (if (.exists d)
+      (->> (.listFiles d) (filter #(.isDirectory ^java.io.File %))
+           (mapv #(.getName ^java.io.File %)) sort vec)
+      [])))
+
 (defn subject-file ^java.io.File [subject & segs]
   (apply io/file (subject-dir subject) segs))
 

@@ -142,6 +142,46 @@
        " (o aprendiz vê tudo no Obsidian). Toda avaliação cita evidência.\n\n"))
 
 ;; ---------------------------------------------------------------------------
+;; sem matéria — onboarding fluido (a matéria nasce da conversa)
+;; ---------------------------------------------------------------------------
+
+(def ^:private MateriaCheck
+  [:map
+   [:materia-identificada? {:description "true se a mensagem do aprendiz deixa claro O QUE ele quer estudar (nova matéria ou uma das existentes)"}
+    :boolean]
+   [:materia {:optional true
+              :description "se identificada: nome curto da matéria, ex: typescript, guitarra, calculo-1"}
+    :string]])
+
+(defn- turno-sem-materia!
+  "Nenhuma matéria ativa: descobre da própria mensagem. Se identificar,
+   sinaliza no blackboard (o servidor abre a matéria e re-roda o turno já
+   no estágio de missão); senão, conversa perguntando o que estudar."
+  [ctx user-text emit!]
+  (let [existentes (vault/list-subjects)
+        {:keys [materia-identificada? materia]}
+        (ask-edn! ctx {:schema* MateriaCheck
+                       :prompt (schema/edn-prompt MateriaCheck
+                                {:preamble (str "Mensagem do aprendiz ao abrir o School: \""
+                                                user-text "\"\n\nMatérias já existentes: "
+                                                (if (seq existentes) (str/join ", " existentes) "(nenhuma)")
+                                                ".")
+                                 :extra (str "Se a mensagem citar uma matéria existente, use o "
+                                             "nome EXATO dela. Saudação sem assunto claro => "
+                                             ":materia-identificada? false.")})})]
+    (if (and materia-identificada? (not (str/blank? (str materia))))
+      (do (bb/put! ctx :materia-escolhida (vault/slugify materia))
+          {:text "" :interrupted? false :skip-history? true})
+      (let [system (str "Você é o professor do School — um professor particular "
+                        "adaptativo. Responda em pt-BR, caloroso e breve. O aprendiz "
+                        "ainda não escolheu matéria. Pergunte o que ele quer aprender"
+                        (when (seq existentes)
+                          (str " e ofereça continuar uma das matérias existentes: "
+                               (str/join ", " existentes)))
+                        ".")]
+        (stream! ctx (->messages system "sem-materia" user-text) emit!)))))
+
+;; ---------------------------------------------------------------------------
 ;; estágio :missao
 ;; ---------------------------------------------------------------------------
 
@@ -451,41 +491,53 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- turno-fn
-  "A :fn das três ações — o planner escolhe pela pré-condição de estágio."
+  "A :fn das ações — o planner escolhe pela pré-condição de estágio."
   [ctx]
   (let [subject   (bb/fetch ctx :subject)
         user-text (bb/fetch ctx :message)
         emit!     (bb/fetch ctx :emit!)
-        slug      (vault/slugify subject)
-        resumo*   (vault/resumo subject) ; RELÊ o vault (ADR-0002)
-        {:keys [text interrupted?]}
-        (case (:stage resumo*)
-          :missao     (turno-missao!   ctx subject resumo* user-text emit!)
-          :prova-fria (turno-prova!    ctx subject resumo* user-text emit!)
-          :ensino     (turno-ensino!   ctx subject resumo* user-text emit!)
-          :capstone   (turno-capstone! ctx subject resumo* user-text emit!))]
-    (append-history! slug
-                     (cond-> [{:role :user :text user-text}]
-                       (not (str/blank? (str text))) (conj {:role :assistant :text text})))
+        sem?      (str/blank? (str subject))
+        slug      (if sem? "sem-materia" (vault/slugify subject))
+        resumo*   (when-not sem? (vault/resumo subject)) ; RELÊ o vault (ADR-0002)
+        {:keys [text interrupted? skip-history?]}
+        (if sem?
+          (turno-sem-materia! ctx user-text emit!)
+          (case (:stage resumo*)
+            :missao     (turno-missao!   ctx subject resumo* user-text emit!)
+            :prova-fria (turno-prova!    ctx subject resumo* user-text emit!)
+            :ensino     (turno-ensino!   ctx subject resumo* user-text emit!)
+            :capstone   (turno-capstone! ctx subject resumo* user-text emit!)))]
+    (when-not skip-history?
+      (append-history! slug
+                       (cond-> [{:role :user :text user-text}]
+                         (not (str/blank? (str text))) (conj {:role :assistant :text text}))))
     (bb/put! ctx :interrupted? (boolean interrupted?))
-    (bb/put! ctx :stage (name (:stage resumo*)))
+    (bb/put! ctx :stage (if sem? "sem-materia" (name (:stage resumo*))))
     (bb/set-condition! ctx :respondido? true)))
 
 (defn- stage-condition [nome esperado]
   {:name nome
    :fn (fn [ctx]
-         (= esperado (vault/stage (bb/fetch ctx :subject))))})
+         (let [subject (bb/fetch ctx :subject)]
+           (and (not (str/blank? (str subject)))
+                (= esperado (vault/stage subject)))))})
 
 (defn professor []
   (ec/agent
    {:name        "professor-school"
     :description "professor adaptativo do School — missão, prova fria, ensino"
-    :conditions [(stage-condition :estagio-missao? :missao)
+    :conditions [{:name :sem-materia?
+                  :fn (fn [ctx] (str/blank? (str (bb/fetch ctx :subject))))}
+                 (stage-condition :estagio-missao? :missao)
                  (stage-condition :estagio-prova? :prova-fria)
                  (stage-condition :estagio-ensino? :ensino)
                  (stage-condition :estagio-capstone? :capstone)]
     :goals   [{:name "turno-respondido" :pre [:respondido?] :value 1.0}]
-    :actions [{:name "entrevistar-missao" :llm? true :retries 1
+    :actions [{:name "escolher-materia" :llm? true :retries 1
+               :pre [:sem-materia?] :post [:respondido?]
+               :description "descobre da conversa qual matéria o aprendiz quer estudar"
+               :fn turno-fn}
+              {:name "entrevistar-missao" :llm? true :retries 1
                :pre [:estagio-missao?] :post [:respondido?]
                :description "entrevista o aprendiz até a missão ficar clara"
                :fn turno-fn}

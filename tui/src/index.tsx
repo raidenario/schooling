@@ -1,17 +1,18 @@
 import React, {useEffect, useRef, useState} from 'react';
-import {render, Box, Text, useInput} from 'ink';
+import {render, Box, Static, Text, useInput} from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import WebSocket from 'ws';
 
 const URL = process.env.SCHOOL_WS ?? 'ws://localhost:7777';
-const SUBJECT = process.argv[2]; // pnpm run dev -- <matéria>; sem arg = modo spike
+const SUBJECT_ARG = process.argv[2]; // opcional: pnpm run dev -- <matéria>
 
 // paleta inspirada no Claude Code
 const ACCENT = '#D97757'; // coral
 const DIM = 'gray';
 
 type Entry = {role: 'aprendiz' | 'professor' | 'sistema'; text: string; interrupted?: boolean};
+type Item = {kind: 'banner'} | ({kind: 'msg'} & Entry);
 type Server =
   | {type: 'token'; text: string}
   | {type: 'done'; interrupted?: boolean}
@@ -20,23 +21,34 @@ type Server =
   | {type: 'records'; items: string[]};
 
 const HELP = [
-  '/help   — esta ajuda',
-  '/clear  — limpa a tela (não apaga o histórico do servidor)',
-  '/stage  — estágio e matéria atuais',
-  '/vault  — caminho dos arquivos desta matéria',
-  'ESC     — interrompe a aula no meio do stream',
+  '/help           — esta ajuda',
+  '/materia <nome> — abre/troca a matéria (ou só diga o que quer aprender)',
+  '/stage          — matéria e estágio atuais',
+  '/vault          — caminho dos arquivos desta matéria',
+  'ESC             — interrompe a aula no meio do stream',
 ].join('\n');
 
-function Marker({role}: {role: Entry['role']}) {
-  if (role === 'aprendiz') return <Text color={DIM}>{'❯ '}</Text>;
-  if (role === 'professor') return <Text color={ACCENT}>{'⏺ '}</Text>;
-  return <Text color={DIM}>{'⎿  '}</Text>;
+function Banner() {
+  return (
+    <Box borderStyle="round" borderColor={ACCENT} flexDirection="column" paddingX={2} marginTop={1}>
+      <Text>
+        <Text color={ACCENT} bold>✳ School</Text>
+        <Text color={DIM}> — professor particular adaptativo</Text>
+      </Text>
+      <Text color={DIM}>diga o que quer aprender, ou continue uma matéria existente</Text>
+      <Text color={DIM}>/help para comandos · os arquivos aparecem no Obsidian</Text>
+    </Box>
+  );
 }
 
 function Message({e}: {e: Entry}) {
+  const marker =
+    e.role === 'aprendiz' ? <Text color={DIM}>{'❯ '}</Text>
+    : e.role === 'professor' ? <Text color={ACCENT}>{'⏺ '}</Text>
+    : <Text color={DIM}>{'⎿  '}</Text>;
   return (
     <Box marginTop={1}>
-      <Marker role={e.role} />
+      {marker}
       <Box flexGrow={1}>
         <Text color={e.role === 'sistema' ? DIM : undefined} dimColor={e.role === 'aprendiz'}>
           {e.text}
@@ -47,34 +59,23 @@ function Message({e}: {e: Entry}) {
   );
 }
 
-function Thinking({elapsed, streaming}: {elapsed: number; streaming: boolean}) {
-  return (
-    <Box marginTop={1}>
-      <Text color={ACCENT}>
-        <Spinner type="dots" />
-      </Text>
-      <Text color={DIM}>
-        {' '}
-        {streaming ? 'ensinando' : 'professor pensando'}… ({elapsed}s · esc para interromper)
-      </Text>
-    </Box>
-  );
-}
-
 function App() {
-  const [log, setLog] = useState<Entry[]>([]);
+  const [items, setItems] = useState<Item[]>([{kind: 'banner'}]);
   const [streaming, setStreaming] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [connected, setConnected] = useState(false);
   const [busy, setBusy] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [materia, setMateria] = useState<string | null>(SUBJECT_ARG ?? null);
   const [stage, setStage] = useState<string | null>(null);
   const [vaultDir, setVaultDir] = useState<string | null>(null);
   const ws = useRef<WebSocket | null>(null);
   const streamRef = useRef<string | null>(null);
   const busyRef = useRef(false);
 
-  // cronômetro do turno
+  const push = (e: Entry) => setItems(l => [...l, {kind: 'msg', ...e}]);
+  const sys = (text: string) => push({role: 'sistema', text});
+
   useEffect(() => {
     if (!busy) return;
     setElapsed(0);
@@ -89,7 +90,7 @@ function App() {
       sock = new WebSocket(URL);
       ws.current = sock;
       sock.on('open', () => {
-        if (SUBJECT) sock.send(JSON.stringify({type: 'start', subject: SUBJECT}));
+        sock.send(JSON.stringify({type: 'start', subject: SUBJECT_ARG ?? null}));
         setConnected(true);
       });
       sock.on('close', () => {
@@ -113,19 +114,19 @@ function App() {
           setStreaming(null);
           busyRef.current = false;
           setBusy(false);
-          if (text)
-            setLog(l => [...l, {role: 'professor', text, interrupted: msg.interrupted}]);
+          if (text) push({role: 'professor', text, interrupted: msg.interrupted});
         } else if (msg.type === 'info') {
-          // o servidor manda "matéria: X · estágio: Y · vault: Z" e "estágio: Y"
+          const mt = /matéria:\s*([^·]+)/.exec(msg.text)?.[1]?.trim();
           const st = /estágio:\s*([\w-]+)/.exec(msg.text)?.[1];
+          const v = /vault:\s*(.+)$/.exec(msg.text)?.[1]?.trim();
+          if (mt) setMateria(mt);
           if (st) setStage(st);
-          const v = /vault:\s*(.+)$/.exec(msg.text)?.[1];
-          if (v) setVaultDir(v.trim());
-          if (!st && !v) setLog(l => [...l, {role: 'sistema', text: msg.text}]);
+          if (v) setVaultDir(v);
+          if (!st && !v) sys(msg.text);
         } else if (msg.type === 'error') {
           busyRef.current = false;
           setBusy(false);
-          setLog(l => [...l, {role: 'sistema', text: `erro: ${msg.text}`}]);
+          sys(`erro: ${msg.text}`);
         }
       });
     };
@@ -140,18 +141,22 @@ function App() {
   });
 
   const slash = (cmd: string): boolean => {
-    const sys = (text: string) => setLog(l => [...l, {role: 'sistema', text}]);
-    switch (cmd) {
-      case '/help': sys(HELP); return true;
-      case '/clear': setLog([]); return true;
-      case '/stage':
-        sys(`matéria: ${SUBJECT ?? '(modo spike)'} · estágio: ${stage ?? '?'}`);
-        return true;
-      case '/vault': sys(vaultDir ?? 'vault ainda desconhecido — mande uma mensagem primeiro'); return true;
-      default:
-        if (cmd.startsWith('/')) { sys(`comando desconhecido: ${cmd} (/help)`); return true; }
-        return false;
+    if (!cmd.startsWith('/')) return false;
+    const [nome, ...resto] = cmd.split(/\s+/);
+    switch (nome) {
+      case '/help': sys(HELP); break;
+      case '/clear': setItems([{kind: 'banner'}]); break;
+      case '/stage': sys(`matéria: ${materia ?? '(nenhuma)'} · estágio: ${stage ?? '?'}`); break;
+      case '/vault': sys(vaultDir ?? 'nenhuma matéria aberta ainda'); break;
+      case '/materia': {
+        const alvo = resto.join(' ').trim();
+        if (!alvo) { sys('uso: /materia <nome>'); break; }
+        ws.current?.send(JSON.stringify({type: 'start', subject: alvo}));
+        break;
+      }
+      default: sys(`comando desconhecido: ${nome} (/help)`);
     }
+    return true;
   };
 
   const submit = (text: string) => {
@@ -161,32 +166,19 @@ function App() {
     if (slash(t)) return;
     if (busyRef.current || !connected) return;
     ws.current?.send(JSON.stringify({type: 'user_msg', text: t}));
-    setLog(l => [...l, {role: 'aprendiz', text: t}]);
+    push({role: 'aprendiz', text: t});
     busyRef.current = true;
     setBusy(true);
   };
 
   return (
     <Box flexDirection="column" paddingX={1}>
-      <Box
-        borderStyle="round"
-        borderColor={ACCENT}
-        flexDirection="column"
-        paddingX={2}
-        marginTop={1}
-      >
-        <Text>
-          <Text color={ACCENT} bold>✳ School</Text>
-          <Text color={DIM}> — professor particular adaptativo</Text>
-        </Text>
-        <Text color={DIM}>
-          {SUBJECT ? `matéria: ${SUBJECT}` : 'modo spike (sem matéria)'}
-          {stage ? ` · estágio: ${stage}` : ''}
-        </Text>
-        <Text color={DIM}>/help para comandos · os arquivos aparecem no Obsidian</Text>
-      </Box>
-
-      {log.map((e, i) => <Message key={i} e={e} />)}
+      <Static items={items}>
+        {(item, i) =>
+          item.kind === 'banner'
+            ? <Banner key="banner" />
+            : <Message key={i} e={item} />}
+      </Static>
 
       {streaming !== null && (
         <Box marginTop={1}>
@@ -200,7 +192,14 @@ function App() {
         </Box>
       )}
 
-      {busy && <Thinking elapsed={elapsed} streaming={streaming !== null} />}
+      {busy && (
+        <Box marginTop={1}>
+          <Text color={ACCENT}><Spinner type="dots" /></Text>
+          <Text color={DIM}>
+            {' '}{streaming !== null ? 'ensinando' : 'professor pensando'}… ({elapsed}s · esc para interromper)
+          </Text>
+        </Box>
+      )}
 
       <Box borderStyle="round" borderColor={busy ? DIM : ACCENT} paddingX={1} marginTop={1}>
         <Text color={busy ? DIM : ACCENT}>{'❯ '}</Text>
@@ -208,13 +207,14 @@ function App() {
           value={input}
           onChange={setInput}
           onSubmit={submit}
-          placeholder={busy ? 'aguarde o professor…' : 'converse com o professor'}
+          placeholder={busy ? 'aguarde o professor…' : materia ? `estudando ${materia}` : 'o que você quer aprender?'}
         />
       </Box>
 
       <Text color={DIM}>
-        {connected ? '● conectado' : '○ reconectando…'}
-        {` · ${URL}`}
+        {connected ? '●' : '○'} {connected ? 'conectado' : 'reconectando…'}
+        {materia ? ` · ${materia}` : ''}
+        {stage ? ` · ${stage}` : ''}
         {busy ? ' · esc interrompe' : ''}
       </Text>
     </Box>

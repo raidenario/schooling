@@ -71,4 +71,4 @@ A família inteira de dado temporal derivado, de uma vez:
 
 ### Fase 3 — Superfícies
 
-Servidor MCP (School dentro do Claude Code/Codex), ambientes caderno e exercício como modos do TUI (exercício com execução real de código), e o que a prática pedir — web, plugin Obsidian, mobile (aí sim, Kotlin no front).
+Servidor MCP (School dentro do Claude Code/Codex), ambientes caderno e exercício como modos do TUI (exercício com execução real de código), **segunda interface gráfica inspirada em Codex/Claude app/Antigravity 2.0** (o TUI estilo Claude Code segue como primeira interface), e o que a prática pedir — web, plugin Obsidian, mobile (aí sim, Kotlin no front).

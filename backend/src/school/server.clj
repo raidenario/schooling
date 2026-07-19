@@ -3,7 +3,8 @@
 
    Um turno = um processo GOAP do professor (goal :respondido?); o planner
    escolhe a ação pelo estágio do vault. Exige NVIDIA_APIKEY."
-  (:require [embabel-clj.core :as ec]
+  (:require [clojure.string :as str]
+            [embabel-clj.core :as ec]
             [embabel-clj.platform :as platform]
             [school.professor :as professor]
             [school.vault :as vault]
@@ -13,28 +14,48 @@
 (defonce sys* (atom nil))
 (defonce session (atom nil)) ; {:subject "..."} — um aprendiz, uma matéria por vez
 
-(defn- on-start [ch subject]
-  (reset! session {:subject subject})
+(defn- anunciar-materia! [ch subject]
   (let [r (vault/resumo subject)]
     (ws/send! ch {:type "info"
                   :text (str "matéria: " subject
                              " · estágio: " (name (:stage r))
                              " · vault: " (:dir r))})))
 
-(defn- turno [emit! ch text]
-  (let [{:keys [subject]} @session]
-    (when-not subject
-      (throw (ex-info "nenhuma matéria ativa — abra o TUI com uma matéria" {})))
-    (let [{:keys [sys ag]} @sys*
-          proc (ec/run! (:platform sys) ag
-                        {:bindings {:subject subject :message text :emit! emit!}})
-          r    (ec/result proc {:slots [:interrupted? :stage]
-                                :conditions [:respondido?]})]
-      (when (not= "COMPLETED" (:status r))
-        (throw (ex-info (str "processo terminou " (:status r)) r)))
-      (ws/send! ch {:type "info" :text (str "estágio: " (get-in r [:slots :stage]))})
-      (when (get-in r [:slots :interrupted?])
-        (throw (InterruptedException. "aula interrompida pelo aprendiz"))))))
+(defn- on-start
+  "start com matéria abre a matéria; sem matéria (fluxo normal do TUI) só
+   apresenta o que existe — a matéria nasce da conversa."
+  [ch subject]
+  (if (str/blank? (str subject))
+    (do (reset! session {:subject nil})
+        (let [existentes (vault/list-subjects)]
+          (ws/send! ch {:type "info"
+                        :text (if (seq existentes)
+                                (str "matérias: " (str/join ", " existentes)
+                                     " — continue uma ou diga o que quer aprender")
+                                "diga o que você quer aprender")})))
+    (do (reset! session {:subject subject})
+        (anunciar-materia! ch subject))))
+
+(defn- turno
+  ([emit! ch text] (turno emit! ch text 0))
+  ([emit! ch text tentativa]
+   (let [{:keys [subject]} @session
+         {:keys [sys ag]} @sys*
+         proc (ec/run! (:platform sys) ag
+                       {:bindings {:subject (or subject "") :message text :emit! emit!}})
+         r    (ec/result proc {:slots [:interrupted? :stage :materia-escolhida]
+                               :conditions [:respondido?]})]
+     (when (not= "COMPLETED" (:status r))
+       (throw (ex-info (str "processo terminou " (:status r)) r)))
+     (if-let [nova (and (zero? tentativa) (get-in r [:slots :materia-escolhida]))]
+       ;; a matéria nasceu desta mensagem: abre e re-roda o MESMO turno já
+       ;; no estágio de missão — o aprendiz não repete nada
+       (do (reset! session {:subject nova})
+           (anunciar-materia! ch nova)
+           (turno emit! ch text 1))
+       (do (ws/send! ch {:type "info" :text (str "estágio: " (get-in r [:slots :stage]))})
+           (when (get-in r [:slots :interrupted?])
+             (throw (InterruptedException. "aula interrompida pelo aprendiz"))))))))
 
 (defn -main [& _]
   (let [base-url (or (System/getenv "SCHOOL_BASE_URL") "https://integrate.api.nvidia.com")

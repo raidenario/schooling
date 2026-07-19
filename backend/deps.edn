@@ -1,0 +1,43 @@
+{;; ============================================================================
+ ;; School — backend Clojure sobre embabel-clj (ADR-0006).
+ ;;
+ ;;   :spike — Fase 0: servidor WS do spike-gate (ADR-0003)
+ ;;   :dev   — nREPL ao lado da plataforma viva
+ ;;
+ ;; Pré-requisitos: embabel-clj clonado em ../../embabel-lab/embabel-clj e os
+ ;; jars embabel 0.5.0-SNAPSHOT no ~/.m2 (já publicados pelo embabel-lab).
+ ;; ============================================================================
+ :paths ["src" "resources"]
+
+ :mvn/repos
+ {"central"           {:url "https://repo1.maven.org/maven2/"}
+  "clojars"           {:url "https://repo.clojars.org/"}
+  "spring-milestones" {:url "https://repo.spring.io/milestone"}
+  "embabel-releases"  {:url "https://repo.embabel.com/artifactory/libs-release"}
+  "embabel-snapshots" {:url "https://repo.embabel.com/artifactory/libs-snapshot"}}
+
+ :deps
+ {org.clojure/clojure {:mvn/version "1.12.1"}
+  ;; versões pinadas nas que o embabel-lab provou (ADR-0006). Deps DIRETAS
+  ;; vencem as transitivas do embabel-clj (que declara starter 0.4.0).
+  com.embabel.agent/embabel-agent-api            {:mvn/version "0.5.0-SNAPSHOT"}
+  com.embabel.agent/embabel-agent-starter        {:mvn/version "0.5.0-SNAPSHOT"}
+  com.embabel.agent/embabel-agent-starter-openai {:mvn/version "0.5.0-SNAPSHOT"}
+  io.local/embabel-clj {:local/root "../../embabel-lab/embabel-clj"}
+  ;; servidor WebSocket do TUI (default reversível do School.md)
+  http-kit/http-kit    {:mvn/version "2.8.0"}
+  cheshire/cheshire    {:mvn/version "5.13.0"}}
+
+ :aliases
+ {;; Fase 1: clojure -M:server  (WS em ws://localhost:7777; TUI abre a matéria)
+  :server {:main-opts ["-m" "school.server"]}
+
+  ;; Fase 0: clojure -M:spike  (WS em ws://localhost:7777)
+  :spike {:main-opts ["-m" "school.spike"]}
+
+  ;; smoke offline (sem LLM): aponte SCHOOL_VAULT_ROOT/SCHOOL_EVENTS_FILE
+  ;; para um diretório descartável e rode clojure -M:smoke
+  :smoke {:extra-paths ["dev"]
+          :main-opts   ["-m" "school.dev-smoke"]}
+
+  :dev {:extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}}}}}

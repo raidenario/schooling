@@ -1,0 +1,13 @@
+# clojure
+backend/.cpcache/
+backend/target/
+backend/.nrepl-port
+.clj-kondo/.cache/
+.lsp/.cache/
+.calva/
+
+# node
+tui/node_modules/
+
+# logs e temporários
+*.log

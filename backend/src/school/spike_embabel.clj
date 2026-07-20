@@ -17,7 +17,7 @@
            [com.embabel.chat AssistantMessage SystemMessage UserMessage]
            [java.util.concurrent CountDownLatch]))
 
-(def model (or (System/getenv "SCHOOL_MODEL") "qwen/qwen3.5-397b-a17b"))
+(def model (or (System/getenv "SCHOOL_MODEL") "z-ai/glm-5.2"))
 
 (def system-prompt
   (str "Você é o professor do School. Responda em pt-BR, didático e conciso "

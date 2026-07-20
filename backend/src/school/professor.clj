@@ -22,7 +22,7 @@
            [com.embabel.chat AssistantMessage SystemMessage UserMessage]
            [java.util.concurrent CountDownLatch]))
 
-(def model (or (System/getenv "SCHOOL_MODEL") "qwen/qwen3.5-397b-a17b"))
+(def model (or (System/getenv "SCHOOL_MODEL") "z-ai/glm-5.2"))
 (def base-url (or (System/getenv "SCHOOL_PUBLIC_URL") "http://localhost:7777"))
 
 ;; ---------------------------------------------------------------------------

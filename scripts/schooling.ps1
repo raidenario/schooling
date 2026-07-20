@@ -19,6 +19,30 @@ if (-not $env:NVIDIA_APIKEY -and -not $env:SCHOOL_APIKEY) {
   exit 1
 }
 
+# o backend exige Java 21+ (embabel = bytecode 21); um JDK velho no PATH
+# derruba o boot com UnsupportedClassVersionError — se for o caso, aponta
+# para o JDK 21 do scoop SÓ neste processo (os filhos herdam)
+function JavaMajor {
+  if (-not (Get-Command java -ErrorAction SilentlyContinue)) { return 0 }
+  try {
+    # java -version escreve no stderr; redirecionar DENTRO do PS 5.1 com
+    # EAP=Stop vira exceção (NativeCommandError) — o cmd /c redireciona fora
+    $linha = (cmd /c "java -version 2>&1" | Select-Object -First 1).ToString()
+    if ($linha -match '"(\d+)') { return [int]$Matches[1] } else { return 0 }
+  } catch { return 0 }
+}
+if ((JavaMajor) -lt 21) {
+  $jdk21 = Join-Path $env:USERPROFILE "scoop\apps\temurin21-jdk\current"
+  if (Test-Path (Join-Path $jdk21 "bin\java.exe")) {
+    $env:JAVA_HOME = $jdk21
+    $env:Path = (Join-Path $jdk21 "bin") + ";" + $env:Path
+    Write-Host "· java do PATH é antigo — usando o JDK 21 do scoop" -ForegroundColor DarkGray
+  } else {
+    Write-Host "preciso de Java 21+ e não achei o JDK do scoop — rode o install.ps1 de novo" -ForegroundColor Red
+    exit 1
+  }
+}
+
 function Test-Porta([int]$p) {
   [bool](Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue)
 }

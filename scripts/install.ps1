@@ -25,14 +25,34 @@ if (-not (Tem "scoop")) {
   Invoke-RestMethod get.scoop.sh | Invoke-Expression
   $env:Path = "$env:USERPROFILE\scoop\shims;$env:Path"
 }
+function JavaMajor {
+  if (-not (Tem "java")) { return 0 }
+  try {
+    # java -version escreve no stderr; redirecionar DENTRO do PS 5.1 com
+    # EAP=Stop vira exceção (NativeCommandError) — o cmd /c redireciona fora
+    $linha = (cmd /c "java -version 2>&1" | Select-Object -First 1).ToString()
+    if ($linha -match '"(\d+)') { return [int]$Matches[1] } else { return 0 }
+  } catch { return 0 }
+}
+
 Passo "ferramentas (so instala o que falta)"
 try { scoop bucket add java *> $null } catch {}
 if (-not (Tem "git"))     { scoop install git }
-if (-not (Tem "java"))    { scoop install temurin21-jdk }
+# presenca de `java` nao basta: um JDK velho no PATH (17-) nao roda o embabel
+# (bytecode 21 / class file 65) — checa a VERSAO
+if ((JavaMajor) -lt 21)   { scoop install temurin21-jdk }
 if (-not (Tem "clojure")) { scoop install clojure }
 if (-not (Tem "node"))    { scoop install nodejs }
 if (-not (Tem "mvn"))     { scoop install maven }
 if (-not (Tem "pnpm"))    { scoop install pnpm }
+# nesta MESMA sessao o PATH ainda pode resolver o java velho — aponta o
+# JDK 21 do scoop para o mvn (dice) e qualquer passo seguinte
+$jdk21 = Join-Path $env:USERPROFILE "scoop\apps\temurin21-jdk\current"
+if (((JavaMajor) -lt 21) -and (Test-Path (Join-Path $jdk21 "bin\java.exe"))) {
+  $env:JAVA_HOME = $jdk21
+  $env:Path = (Join-Path $jdk21 "bin") + ";" + $env:Path
+  Write-Host "    usando o JDK 21 do scoop nesta sessao (java do PATH e antigo)" -ForegroundColor DarkGray
+}
 
 # --- 2. o layout de pastas irmas (os :local/root dependem dele) --------------
 #   <base>/schooling  +  <base>/embabel-lab/{embabel-clj, dice, dice-chronicle}

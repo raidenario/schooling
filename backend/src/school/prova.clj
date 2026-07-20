@@ -61,6 +61,22 @@
       (assoc :titulo titulo)
       valida-consistencia!))
 
+(defn consulta-texto
+  "As questões da prova em texto legível para o professor no MODO CONSULTA —
+   SEM :correta e SEM :explicacao. O professor enxerga exatamente o que o
+   aprendiz vê na tela (enunciado, contexto, alternativas), nunca o gabarito:
+   assim orienta a Q4 sem pedir print, mas não tem como vazar a resposta."
+  ^String [prova]
+  (->> (:questoes prova)
+       (map (fn [{:keys [id enunciado contexto alternativas]}]
+              (str (str/upper-case (str id)) ". " enunciado
+                   (when-not (str/blank? (str contexto)) (str "\n" contexto))
+                   "\n"
+                   (str/join "\n"
+                             (for [{:keys [letra texto]} alternativas]
+                               (str "  " letra ") " texto))))))
+       (str/join "\n\n")))
+
 ;; ---------------------------------------------------------------------------
 ;; render — o molde fixo e gamificado
 ;; ---------------------------------------------------------------------------

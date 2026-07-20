@@ -254,15 +254,20 @@
           (emit! "\n\n🎯 Calibragem registrada. No próximo turno eu gero sua prova fria — diga \"pode gerar\" quando quiser."))))
     r))
 
-(defn- consulta-system [resumo* que-prova]
+(defn- consulta-system [resumo* que-prova prova]
   (str (preamble resumo*)
-       "MODO CONSULTA — a " que-prova " está ABERTA no navegador do aprendiz. "
+       "MODO CONSULTA — a " que-prova " está ABERTA no navegador do aprendiz.\n\n"
+       "VOCÊ TEM AS QUESTÕES DA PROVA (mas NÃO o gabarito — nem você sabe qual "
+       "alternativa é a correta, e isso é de propósito):\n\n"
+       (prova/consulta-texto prova) "\n\n"
+       "O aprendiz pode citar uma questão pelo número ('me ajuda na q4') — você JÁ "
+       "SABE do que ela trata; NUNCA peça print nem diga que não tem acesso à prova. "
        "REGRA ABSOLUTA: NUNCA dê a resposta de nenhuma questão, NUNCA elimine "
        "alternativas, NUNCA confirme nem negue um palpite. Oriente socraticamente: "
-       "faça perguntas que levem o aprendiz a raciocinar até chegar sozinho; "
-       "relembre conceitos gerais sem conectá-los à questão específica. Incentive "
-       "o 🤷 'não sei' honesto — vale mais para o diagnóstico que um chute. As "
-       "respostas chegam pelo botão CONCLUIR da página, não por aqui."))
+       "pode discutir o CONCEITO que a questão toca e fazer perguntas que levem o "
+       "aprendiz a raciocinar até chegar sozinho — só nunca aponte qual alternativa é. "
+       "Incentive o 🤷 'não sei' honesto — vale mais para o diagnóstico que um chute. "
+       "As respostas chegam pelo botão CONCLUIR da página, não por aqui."))
 
 (defn- gerar-prova-fria! [ctx subject resumo* emit!]
   (let [slug (vault/slugify subject)
@@ -345,8 +350,9 @@
     (gerar-prova-fria! ctx subject resumo* emit!)
 
     (not (apply vault/exists? subject vault/prova-fria-respostas-path))
-    (let [slug (vault/slugify subject)]
-      (stream! ctx (->messages (consulta-system resumo* "prova fria") slug user-text) emit!))
+    (let [slug (vault/slugify subject)
+          p    (vault/read-edn subject vault/prova-fria-edn-path)]
+      (stream! ctx (->messages (consulta-system resumo* "prova fria" p) slug user-text) emit!))
 
     :else
     (corrigir-fria! ctx subject resumo* emit!)))
@@ -569,7 +575,8 @@
 
       (and m (apply vault/exists? subject (vault/module-prova-edn-path m))
              (not (apply vault/exists? subject (vault/module-result-path m))))
-      (stream! ctx (->messages (consulta-system resumo* (str "prova do módulo " (:nn m)))
+      (stream! ctx (->messages (consulta-system resumo* (str "prova do módulo " (:nn m))
+                                                (vault/read-edn subject (vault/module-prova-edn-path m)))
                                slug user-text)
                emit!)
 

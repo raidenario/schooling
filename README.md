@@ -15,12 +15,24 @@ Embabel como dados; ADR-0006) — Kotlin só como jars consumidos. Frontend TUI 
 **TypeScript/Ink**, cliente fino via WebSocket (ADR-0001). Estado: prosa no vault
 Obsidian, dado temporal fora dele (ADR-0002); formatos das skills como contrato (ADR-0004).
 
+## Instalar num PC novo (Windows)
+
+Um comando bootstrapa tudo — scoop + ferramentas, os 4 clones no layout certo,
+o jar do dice no `~/.m2`, a API key, o vault e o comando `schooling` no PATH:
+
+```powershell
+iwr https://raw.githubusercontent.com/raidenario/schooling/main/scripts/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1
+# abra um terminal novo e digite: schooling
+```
+
 ## Rodar
 
-Pré-requisitos: JDK 21+, Clojure CLI, Node 20+ + pnpm, `embabel-clj` clonado como
-irmão do repo (`../embabel-lab/embabel-clj`), jars `embabel-agent 0.5.0-SNAPSHOT`
-e `dice` no `~/.m2`, e `NVIDIA_APIKEY` no ambiente (provider OpenAI-compatível;
-troque com `SCHOOL_BASE_URL`/`SCHOOL_APIKEY`/`SCHOOL_MODEL`).
+Pré-requisitos (o install.ps1 cuida de todos): JDK 21+, Clojure CLI, Node 20+ +
+pnpm, `embabel-clj` e `dice-chronicle` clonados como irmãos em
+`../embabel-lab/`, jars `embabel-agent 0.5.0-SNAPSHOT` e `dice` no `~/.m2`, e
+`NVIDIA_APIKEY` no ambiente (provider OpenAI-compatível; troque com
+`SCHOOL_BASE_URL`/`SCHOOL_APIKEY`/`SCHOOL_MODEL`).
 
 ```powershell
 # um comando só: sobe o backend escondido (ou reaproveita um já de pé),

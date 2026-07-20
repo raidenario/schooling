@@ -31,11 +31,14 @@ if (Test-Porta $port) {
   New-Item -ItemType Directory -Force $logDir | Out-Null
   $log = Join-Path $logDir "backend.log"
   $err = Join-Path $logDir "backend.err.log"
-  Write-Host "· subindo o backend (primeira vez demora: deps + Spring)…" -ForegroundColor DarkGray
-  $backendProc = Start-Process -FilePath "clojure" -ArgumentList "-M:server" `
+  Write-Host "· subindo o backend (primeira vez demora MUITO: baixa todas as deps)…" -ForegroundColor DarkGray
+  # via wrapper powershell: o `clojure` do scoop pode ser .exe OU .ps1 conforme
+  # a versão do manifest — Start-Process só lança executável direto
+  $backendProc = Start-Process -FilePath "powershell" `
+    -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "clojure -M:server" `
     -WorkingDirectory $backend -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput $log -RedirectStandardError $err
-  $deadline = (Get-Date).AddSeconds(300)
+  $deadline = (Get-Date).AddSeconds(900)
   while (-not (Test-Porta $port)) {
     if ($backendProc.HasExited) {
       Write-Host "backend morreu no boot — veja $err" -ForegroundColor Red

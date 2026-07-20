@@ -165,7 +165,8 @@
                  :logging.level.Embabel "warn"}})
           ag  (ec/deploy! (:platform sys) (professor/professor))]
       (reset! sys* {:sys sys :ag ag})
-      (ws/start! {:on-start     on-start
+      (ws/start! {:port         (some-> (System/getenv "SCHOOL_PORT") Integer/parseInt)
+                  :on-start     on-start
                   :http-handler http-routes
                   :on-user-msg  (fn [ch text]
                                   (swap! session assoc :ch ch)

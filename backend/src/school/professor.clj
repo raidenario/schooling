@@ -224,34 +224,64 @@
 
 (def ^:private CalibragemCheck
   [:map
-   [:calibragem-completa? {:description "true se já há noção suficiente do que o aprendiz conhece dos conceitos-chave para dosar a prova fria"}
-    :boolean]
-   [:resumo {:optional true
-             :description "se completa: calibragem.md — lista dos conceitos-chave e o que o aprendiz declarou conhecer/desconhecer de cada um"}
-    :string]])
+   [:resumo {:description "calibragem.md CONSOLIDADO: os conceitos-chave da matéria e, para cada um, o que o aprendiz declarou OU demonstrou conhecer/desconhecer — incorporando TUDO que ele disse até agora, inclusive respostas dele a perguntas do professor. Nunca descarte sinal."}
+    :string]
+   [:pode-gerar? {:description "true SÓ se a última mensagem do aprendiz é um aval explícito para gerar a prova fria agora (ex.: 'pode gerar', 'bora', 'manda', 'vamos'). false se ele está respondendo perguntas, tirando dúvida ou ainda conversando"}
+    :boolean]])
+
+(declare gerar-prova-fria!)
 
 (defn- turno-calibragem! [ctx subject resumo* user-text emit!]
   (let [slug   (vault/slugify subject)
+        ja?    (apply vault/exists? subject vault/calibragem-path)
         system (str (preamble resumo*)
                     "ESTÁGIO: calibragem pré-prova. Missão:\n" (:mission resumo*)
                     "\n\nDescubra o nível REAL do aprendiz ANTES da prova fria: "
-                    "pergunte sobre os conceitos-chave da matéria (ex.: para rust — "
-                    "ownership, borrowing, lifetimes, você já usou linguagem com GC?), "
-                    "2-3 conceitos por mensagem, tom leve, sem ensinar ainda. "
-                    "'Nunca ouvi falar' é resposta perfeita — é para isso que serve. "
-                    "Em 1-3 trocas você deve ter o suficiente.")
+                    "converse sobre os conceitos-chave da matéria (ex.: para rust — "
+                    "ownership, borrowing, lifetimes, já usou linguagem com GC?), "
+                    "2-3 conceitos por mensagem, tom leve, SEM ensinar. "
+                    "NUNCA aplique prova nem 'avaliação' numerada aqui — a prova é uma "
+                    "etapa SEPARADA, gerada depois; isto é só bate-papo de sondagem. "
+                    "'Nunca ouvi falar' é resposta perfeita. Quando tiver sinal "
+                    "suficiente, confirme o nível que percebeu, diga que basta um "
+                    "'pode gerar' para a prova sair, e PARE de puxar assunto novo. "
+                    "Se o aprendiz mandar gerar (pode gerar / bora / manda), responda "
+                    "só uma frase curta de transição e nada mais."
+                    (when ja? "\n\nJá há uma calibragem registrada; você a está refinando "
+                              "com o que o aprendiz acabou de dizer."))
         r      (stream! ctx (->messages system slug user-text) emit!)]
     (when-not (:interrupted? r)
-      (let [{:keys [calibragem-completa? resumo]}
-            (ask-edn! ctx {:schema* CalibragemCheck
-                           :prompt (schema/edn-prompt CalibragemCheck
-                                    {:preamble (str "Conversa de calibragem da matéria \""
-                                                    subject "\":\n\n"
-                                                    (transcript slug user-text (:text r)))})})]
-        (when (and calibragem-completa? (not (str/blank? (str resumo))))
-          (vault/write-file! subject vault/calibragem-path resumo)
-          (events/emit! :calibragem-registrada {:subject slug})
-          (emit! "\n\n🎯 Calibragem registrada. No próximo turno eu gero sua prova fria — diga \"pode gerar\" quando quiser."))))
+      ;; o judge/geração é telemetria+decisão: uma falha de LLM (ex.: 429 do
+      ;; free tier) NÃO pode derrubar o turno — a resposta já foi streamada e o
+      ;; que o aprendiz disse fica no histórico, reconsolidado no próximo turno.
+      (try
+        (let [{:keys [resumo pode-gerar?]}
+              (ask-edn! ctx {:schema* CalibragemCheck
+                             :prompt (schema/edn-prompt CalibragemCheck
+                                      {:preamble (str "Conversa de calibragem da matéria \""
+                                                      subject "\":\n\n"
+                                                      (transcript slug user-text (:text r)))
+                                       :extra (str "SEMPRE produza :resumo consolidando tudo que o "
+                                                   "aprendiz declarou/demonstrou até aqui — inclusive "
+                                                   "respostas a perguntas do professor. :pode-gerar? "
+                                                   "só true com aval explícito para gerar a prova.")})})]
+          ;; toda mensagem substantiva atualiza o calibragem.md — nada de sinal se perde
+          (when-not (str/blank? (str resumo))
+            (vault/write-file! subject vault/calibragem-path resumo)
+            (events/emit! :calibragem-registrada {:subject slug}))
+          (cond
+            pode-gerar?  (gerar-prova-fria! ctx subject resumo* emit!)
+            (not ja?)    (emit! (str "\n\n🎯 Calibragem registrada. Seguimos afinando, "
+                                     "ou diga \"pode gerar\" quando quiser a prova."))))
+        (catch Exception e
+          ;; (Thread/interrupted) consome o flag: se setado, foi ESC de verdade
+          ;; — propaga como interrupção; senão é falha de LLM e degrada com graça
+          ;; (limpar o flag ainda evita que sobre para o próximo turno no pool)
+          (if (Thread/interrupted)
+            (throw (InterruptedException. "calibragem interrompida"))
+            (do (binding [*out* *err*]
+                  (println "calibragem: judge/geração falhou:" (.getMessage e)))
+                (emit! "\n\n(tive um soluço para processar isso agora — pode repetir ou seguir; nada do que você disse se perde)"))))))
     r))
 
 (defn- consulta-system [resumo* que-prova prova]
@@ -343,11 +373,11 @@
 
 (defn- turno-prova! [ctx subject resumo* user-text emit!]
   (cond
-    (not (apply vault/exists? subject vault/calibragem-path))
-    (turno-calibragem! ctx subject resumo* user-text emit!)
-
+    ;; enquanto a prova não foi gerada, tudo é calibragem — cada resposta do
+    ;; aprendiz refina o calibragem.md; a prova só sai com um "pode gerar" (a
+    ;; própria turno-calibragem! decide e dispara a geração)
     (not (apply vault/exists? subject vault/prova-fria-edn-path))
-    (gerar-prova-fria! ctx subject resumo* emit!)
+    (turno-calibragem! ctx subject resumo* user-text emit!)
 
     (not (apply vault/exists? subject vault/prova-fria-respostas-path))
     (let [slug (vault/slugify subject)

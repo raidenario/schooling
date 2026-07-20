@@ -44,6 +44,10 @@ cd backend
 $env:SCHOOL_VAULT_ROOT="C:\tmp\vault-teste"; $env:SCHOOL_EVENTS_FILE="C:\tmp\events.edn"
 clojure -M:smoke
 
+# ciclo offline da Fase 2a (FSRS/cards/review) — mesmas raízes + agenda:
+$env:SCHOOL_AGENDA_DB="C:\tmp\agenda-teste.db"
+clojure -M:f2a-test
+
 # protocolo WS (contra o backend em modo fake: SCHOOL_SPIKE=fake clojure -M:spike)
 cd tui
 node scripts/pipe-test.mjs

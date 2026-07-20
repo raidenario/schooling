@@ -7,8 +7,10 @@
             [clojure.string :as str]
             [embabel-clj.core :as ec]
             [embabel-clj.platform :as platform]
+            [school.agenda :as agenda]
             [school.events :as events]
             [school.professor :as professor]
+            [school.review :as review]
             [school.vault :as vault]
             [school.ws :as ws])
   (:gen-class))
@@ -147,8 +149,36 @@
           [:respostas :post] (receber-respostas! slug paths (slurp (:body req)))
           nil)))))
 
+;; -- revisão FSRS por HTTP (Fase 2a) ------------------------------------------
+
+(def ^:private review-limite-dia 20)
+
+(defn- registrar-review! [slug body]
+  (let [{:strs [card rating]} (json/parse-string body)]
+    (if-not (and (number? card) (#{1 2 3 4} rating))
+      {:status 400 :headers {"Content-Type" "text/plain; charset=utf-8"}
+       :body "esperava {card: id, rating: 1-4}"}
+      (let [s' (agenda/review! (long card) (long rating) (java.time.Instant/now))]
+        (events/emit! :card-revisado {:subject slug :card (long card) :rating rating})
+        {:status 200 :headers {"Content-Type" "application/json; charset=utf-8"}
+         :body (json/generate-string {:ok true :proxima (str (:due s'))
+                                      :intervalo-dias (:interval-days s')})}))))
+
+(defn- review-routes [req]
+  (let [uri (str (:uri req)) method (:request-method req)]
+    (when-let [[_ slug] (re-matches #"/review/([^/]+)" uri)]
+      (case method
+        :get  (let [now   (java.time.Instant/now)
+                    due   (agenda/due-cards slug now review-limite-dia)
+                    cards (review/carrega-cards slug due)]
+                (html-resp (review/render-html {:subject slug :cards cards
+                                                :stats (agenda/stats slug now)}
+                                               (str "/review/" slug))))
+        :post (registrar-review! slug (slurp (:body req)))
+        nil))))
+
 (defn- http-routes [req]
-  (or (aula-routes req) (prova-routes req)))
+  (or (review-routes req) (aula-routes req) (prova-routes req)))
 
 (defn -main [& _]
   (let [base-url (or (System/getenv "SCHOOL_BASE_URL") "https://integrate.api.nvidia.com")

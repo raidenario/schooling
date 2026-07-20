@@ -27,9 +27,10 @@ Língua do domínio: [CONTEXT.md](CONTEXT.md). Decisões: [docs/adr/](docs/adr/)
 ### Defaults reversíveis (não-ADR)
 
 - Monorepo: `backend/` (tools.deps + tools.build; embabel-agent e dice pinados nas versões provadas pelo lab) + `tui/` (pnpm, Ink + React + TS).
+- Embabel pinado em `0.5.0-SNAPSHOT` — a família que o DICE exige (verificado 2026-07-20: upstream do dice sem migração 1.0). O embabel-clj já roda no 1.0.0 GA com interop adaptativa; sobe tudo junto quando o DICE acompanhar.
 - Servidor WebSocket em Clojure (http-kit ou ring/jetty); Spring sobe só porque o Embabel exige (padrão `platform.clj` do embabel-clj).
 - Protocolo front↔back: WebSocket (bidirecional simplifica interrupção mid-stream); trocar por SSE+POST é barato se incomodar.
-- Modelo: `claude-opus-4-8` como professor padrão (adaptive thinking), configurável por matéria.
+- Modelo: `z-ai/glm-5.2` via NVIDIA como professor padrão (`SCHOOL_MODEL` troca; DeepSeek V4 Pro e Inkling no catálogo — decisão 2026-07-19).
 - Provas continuam HTML self-contained abertos no browser (contrato de formato); o TUI só aponta e coleta respostas.
 - Conteúdo em pt-BR; código/exercícios na língua da matéria.
 
@@ -64,15 +65,32 @@ Uma aula mínima de ponta a ponta: ação GOAP (embabel-clj) → chat Embabel/Sp
 > streamada no chat, calibragem pré-prova e modo consulta — fluxo interativo
 > completo provado ao vivo (PROVA-HTTP-TEST PASS).
 
-`school learn <matéria>` e `school continue <matéria>` no TUI, com paridade agent-schools: entrevista de missão → prova fria → DIAGNOSIS.md → CURRICULUM.md → ensino do módulo em chat → prova de consolidação → adaptação citando o diagnóstico. O backend já emite **eventos de domínio** (prova corrigida, módulo passou, status mudou) — sem consumidor ainda; é o gancho da Fase 2 ([ADR-0005](docs/adr/0005-dice-chronicle-memoria-do-professor.md)). Pronto quando: uma matéria real estudada por uma semana inteira só pelo TUI, com o vault legível no Obsidian e operável pelo Claude Code.
+> Atualização 2026-07-20: **Aula como documento** ([ADR-0008](docs/adr/0008-aula-como-documento.md))
+> virou entidade de ensino de 1ª classe — explicação detalhada sai do chat e vira
+> página com ciclo de entendimento (avaliação sólido/parcial/confuso; decisão
+> re-explica/segue/prova em código por peso de complexidade). Modo consulta agora
+> enxerga as questões da prova (nunca o gabarito) e a calibragem reconsolida a
+> cada resposta do aprendiz, com "pode gerar" explícito como gate da prova fria.
 
-### Fase 2 — Memória
+`school learn <matéria>` e `school continue <matéria>` no TUI, com paridade agent-schools: entrevista de missão → prova fria → DIAGNOSIS.md → CURRICULUM.md → ensino do módulo em chat → prova de consolidação → adaptação citando o diagnóstico. O backend já emite **eventos de domínio** (prova corrigida, módulo passou, status mudou) — sem consumidor ainda; é o gancho da Fase 2 ([ADR-0005](docs/adr/0005-dice-chronicle-memoria-do-professor.md)). Pronto quando: uma matéria real estudada por uma semana inteira só pelo TUI, com o vault legível no Obsidian e operável pelo Claude Code. **O que falta é o dogfood** — o fluxo está em código e provado por partes ao vivo; o loop ensino→consolidação→capstone e a semana de uso real ainda não rodaram.
 
-A família inteira de dado temporal derivado, de uma vez:
+### Fase 2 — Memória (fatiada em 2026-07-20; [ADR-0009](docs/adr/0009-retencao-fsrs.md))
 
-- **Flashcards**: port do FSRS para Clojure (referência: ts-fsrs), Agenda no SQLite, conteúdo dos cards no vault. Mineração automática: item `fraco` no diagnóstico e questão errada de prova viram cards. `school review` roda a fila do dia com interleaving de módulos antigos.
+A família de dado temporal derivado, em duas fatias:
+
+**Fase 2a — Retenção ✅ (em código desde 2026-07-20)**
+
+- **`school.fsrs`**: FSRS-5 puro (variante long-term), determinístico, testado.
+- **`school.agenda`**: estado de agendamento no SQLite (`SCHOOL_AGENDA_DB`, fora do OneDrive) — cards, agenda FSRS, review_log append-only.
+- **`school.cards`**: mineração em código, sem LLM — questão errada/🤷 de prova corrigida vira card no vault (`cards/NNNN-<slug>.md`), dedup por slug; a correção anuncia a fila.
+- **`school.review`**: sessão de revisão como página (`/review/<matéria>`), um card por vez, rating Errei/Difícil/Bom/Fácil, POST por card, FSRS no servidor.
+- Ciclo offline testado (`clojure -M:f2a-test`). Falta: dogfood da fila diária e, depois, mineração de itens `fraco` do diagnóstico e interleaving explícito entre matérias.
+
+**Fase 2b — Memória fina + trajetória (aguardando DICE↔embabel 1.0)**
+
 - **DICE** como memória fina do professor (store JSON, sem Neo4j): micro-fatos, misconceptions, episódios — injetada no prompt via `PromptContributor` e consultável como `Tool`. `DIAGNOSIS.md` segue sendo o mapa macro ([ADR-0005](docs/adr/0005-dice-chronicle-memoria-do-professor.md)).
-- **dice-chronicle** embutido na mesma JVM (Clojure, atrás de interface Kotlin), consumindo os eventos de domínio da v1: timeline, replay e time travel da trajetória do aprendiz.
+- **dice-chronicle** embutido na mesma JVM, consumindo os eventos de domínio da v1 (`:aula-avaliada`, `:prova-corrigida`, `:card-revisado`…): timeline, replay e time travel da trajetória do aprendiz.
+- Estado do upstream (2026-07-20): dice `0.1.1-SNAPSHOT` pina embabel `0.5.0-SNAPSHOT`; sem PR de migração 1.0. O combo lab-provado (concierge-clj) segue válido — dá pra começar a 2b no 0.5.0-SNAPSHOT quando quisermos.
 
 ### Fase 3 — Superfícies
 

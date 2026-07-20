@@ -16,6 +16,7 @@
             [embabel-clj.core :as ec]
             [embabel-clj.schema :as schema]
             [school.aula :as aula]
+            [school.cards :as cards]
             [school.events :as events]
             [school.prova :as prova]
             [school.vault :as vault])
@@ -351,9 +352,15 @@
                                     (prova/gabarito-html graded (:titulo p)))
         _        (events/emit! :prova-corrigida {:subject slug :prova "prova-fria"
                                                  :score (:score-pct graded)})
+        n-cards  (cards/minerar! {:subject subject :prova-id "prova-fria"
+                                  :prova p :graded graded})
         _        (emit! (str "📊 Corrigido: " (:acertos graded) "/" (:total graded)
                              " (" (:score-pct graded) "%). Gabarito: " base-url
-                             "/gabarito/" slug "/fria\n\nEscrevendo seu diagnóstico…"))
+                             "/gabarito/" slug "/fria"
+                             (when (pos? n-cards)
+                               (str "\n🃏 " n-cards " flashcards minerados dos erros — "
+                                    "revise em " base-url "/review/" slug))
+                             "\n\nEscrevendo seu diagnóstico…"))
         diag     (ask-conteudo! ctx (diagnostico-prompt subject slug graded
                                      (apply vault/read-file subject vault/calibragem-path)
                                      "prova-fria" nil))
@@ -431,9 +438,14 @@
                               (prova/gabarito-html graded (:titulo p)))
         _  (events/emit! :prova-corrigida {:subject slug :prova (vault/module-dir m)
                                            :score (:score-pct graded)})
+        n-cards (cards/minerar! {:subject subject :prova-id (vault/module-dir m)
+                                 :prova p :graded graded})
         _  (emit! (str "📊 Corrigido: " (:acertos graded) "/" (:total graded)
                        " (" (:score-pct graded) "%). Gabarito: " base-url
                        "/gabarito/" slug "/modulo/" (vault/module-dir m)
+                       (when (pos? n-cards)
+                         (str "\n🃏 " n-cards " flashcards minerados dos erros — "
+                              "revise em " base-url "/review/" slug))
                        "\n\nAtualizando diagnóstico e currículo…"))
         diag (ask-conteudo! ctx (diagnostico-prompt subject slug graded nil
                                  (str "modules/" (:nn m)) (:diagnosis resumo*)))
@@ -637,7 +649,10 @@
                         "NUNCA despeje explicação longa no chat: para explicar um "
                         "tópico do zero/em detalhe, ofereça preparar uma AULA "
                         "completa (página bonita que o sistema gera quando o "
-                        "aprendiz aceitar). Quando sentir o módulo consolidado, "
+                        "aprendiz aceitar). Se o aprendiz mencionar revisão ou "
+                        "flashcards, aponte a fila do dia em " base-url "/review/"
+                        (vault/slugify subject) " (os cards nascem dos erros de "
+                        "prova, automaticamente). Quando sentir o módulo consolidado, "
                         "ofereça a prova de consolidação. Se notar fundação "
                         "faltante FORA da matéria, recomende estudá-la antes — "
                         "mas o aprendiz é soberano.")

@@ -26,7 +26,10 @@
   io.local/embabel-clj {:local/root "../../embabel-lab/embabel-clj"}
   ;; servidor WebSocket do TUI (default reversível do School.md)
   http-kit/http-kit    {:mvn/version "2.8.0"}
-  cheshire/cheshire    {:mvn/version "5.13.0"}}
+  cheshire/cheshire    {:mvn/version "5.13.0"}
+  ;; Fase 2a — Agenda FSRS no SQLite (ADR-0002: dado temporal fora do vault)
+  com.github.seancorfield/next.jdbc {:mvn/version "1.3.955"}
+  org.xerial/sqlite-jdbc            {:mvn/version "3.46.1.3"}}
 
  :aliases
  {;; Fase 1: clojure -M:server  (WS em ws://localhost:7777; TUI abre a matéria)
@@ -47,5 +50,10 @@
   ;; renderiza uma aula de exemplo (ADR-0008) para inspeção visual
   :render-aula {:extra-paths ["dev"]
                 :main-opts   ["-m" "school.dev-render-aula"]}
+
+  ;; ciclo offline da Fase 2a (cards/agenda/review) — raízes descartáveis:
+  ;; SCHOOL_AGENDA_DB/SCHOOL_VAULT_ROOT/SCHOOL_EVENTS_FILE + clojure -M:f2a-test
+  :f2a-test {:extra-paths ["dev"]
+             :main-opts   ["-m" "school.dev-f2a-test"]}
 
   :dev {:extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}}}}}

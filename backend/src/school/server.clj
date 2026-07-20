@@ -155,14 +155,15 @@
         api-key  (or (System/getenv "SCHOOL_APIKEY") (System/getenv "NVIDIA_APIKEY"))]
     (when-not api-key
       (throw (ex-info "falta a chave: exporte NVIDIA_APIKEY (ou SCHOOL_APIKEY)" {})))
-    (let [sys (platform/start!
+    (let [log-level (or (System/getenv "SCHOOL_LOG_LEVEL") "warn")
+          sys (platform/start!
                {:properties
                 {:embabel.agent.platform.models.openai.base-url base-url
                  :embabel.agent.platform.models.openai.api-key  api-key
                  :embabel.models.default-llm professor/model
                  :embabel.agent.platform.llm-operations.data-binding.fixedBackoffMillis "6000"
                  :logging.level.root "warn"
-                 :logging.level.Embabel "warn"}})
+                 :logging.level.Embabel log-level}})
           ag  (ec/deploy! (:platform sys) (professor/professor))]
       (reset! sys* {:sys sys :ag ag})
       (ws/start! {:port         (some-> (System/getenv "SCHOOL_PORT") Integer/parseInt)

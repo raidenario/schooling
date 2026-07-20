@@ -33,6 +33,9 @@
               (catch InterruptedException _
                 (finish-turn! ch true))
               (catch Exception e
+                (binding [*out* *err*]
+                  (println "turno falhou:" (.getMessage e))
+                  (.printStackTrace e))
                 (send! ch {:type "error" :text (str (.getMessage e))})
                 (finish-turn! ch false))))))
 

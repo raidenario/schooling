@@ -48,6 +48,11 @@ clojure -M:smoke
 $env:SCHOOL_AGENDA_DB="C:\tmp\agenda-teste.db"
 clojure -M:f2a-test
 
+# ciclo offline da Fase 2b (memória fina DICE+chronicle) — pré-requisito:
+# dice instalado no ~/.m2 (cd ..\..\embabel-lab\dice; mvn install -pl dice -am -DskipTests)
+$env:SCHOOL_CHRONICLE_LOG="C:\tmp\chronicle-teste.edn"
+clojure -M:f2b-test
+
 # protocolo WS (contra o backend em modo fake: SCHOOL_SPIKE=fake clojure -M:spike)
 cd tui
 node scripts/pipe-test.mjs

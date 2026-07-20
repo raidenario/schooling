@@ -18,6 +18,7 @@
             [school.aula :as aula]
             [school.cards :as cards]
             [school.events :as events]
+            [school.memoria :as memoria]
             [school.prova :as prova]
             [school.vault :as vault])
   (:import [com.embabel.agent.api.streaming StreamingPromptRunnerBuilder]
@@ -138,7 +139,10 @@
   (str "Você é o professor do School — um professor particular adaptativo. "
        "Responda SEMPRE em pt-BR, didático, direto, socrático quando couber. "
        "Matéria: " (:subject resumo*) ". Os arquivos vivem em " (:dir resumo*)
-       " (o aprendiz vê tudo no Obsidian). Toda avaliação cita evidência.\n\n"))
+       " (o aprendiz vê tudo no Obsidian). Toda avaliação cita evidência.\n"
+       ;; memória FINA (DICE, ADR-0005) — o PromptContributor manual da 2b
+       (memoria/bloco-prompt (:subject resumo*))
+       "\n"))
 
 ;; ---------------------------------------------------------------------------
 ;; sem matéria — onboarding fluido (a matéria nasce da conversa)
@@ -320,6 +324,31 @@
                 "raciocínio, mas nunca dou a resposta. Ao final, clique em CONCLUIR."))
     {:text "" :interrupted? false}))
 
+(defn- trunc ^String [s n]
+  (let [s (str s)] (if (> (count s) n) (str (subs s 0 n) "…") s)))
+
+(defn- memorizar-prova!
+  "Prova corrigida → memória fina (Fase 2b): erro confiante vira
+   misconception, 🤷 vira lacuna declarada, o score vira episódio volátil.
+   Determinístico — mesma filosofia da mineração de cards (ADR-0009)."
+  [subject prova-id {:keys [score-pct acertos total itens]}]
+  (doseq [{:keys [id enunciado alternativa correta acertou? nao-sei?]} itens
+          :when (not acertou?)]
+    (memoria/lembrar! subject
+      (if nao-sei?
+        {:text (str "Declarou não saber: \"" (trunc enunciado 70) "\" ("
+                    prova-id " " id ")")
+         :confidence 0.95 :importance 0.6 :decay 0.25 :tipo :lacuna
+         :evidencia (str prova-id " " id)}
+        {:text (str "Errou \"" (trunc enunciado 70) "\": marcou " alternativa
+                    ", correta " correta " (" prova-id " " id ")")
+         :confidence 0.85 :importance 0.75 :decay 0.2 :tipo :misconception
+         :evidencia (str prova-id " " id)})))
+  (memoria/lembrar! subject
+    {:text (str "Score " score-pct "% (" acertos "/" total ") na " prova-id)
+     :confidence 1.0 :importance 0.5 :decay 0.4 :tipo :episodio
+     :evidencia prova-id}))
+
 (defn- diagnostico-prompt [subject slug graded calibragem last-assessment diagnostico-anterior]
   (str "Prova corrigida da matéria \"" subject "\" (correção feita por código; "
        "score " (:score-pct graded) "%, " (:acertos graded) "/" (:total graded) ").\n\n"
@@ -354,6 +383,7 @@
                                                  :score (:score-pct graded)})
         n-cards  (cards/minerar! {:subject subject :prova-id "prova-fria"
                                   :prova p :graded graded})
+        _        (memorizar-prova! subject "prova-fria" graded)
         _        (emit! (str "📊 Corrigido: " (:acertos graded) "/" (:total graded)
                              " (" (:score-pct graded) "%). Gabarito: " base-url
                              "/gabarito/" slug "/fria"
@@ -440,6 +470,7 @@
                                            :score (:score-pct graded)})
         n-cards (cards/minerar! {:subject subject :prova-id (vault/module-dir m)
                                  :prova p :graded graded})
+        _  (memorizar-prova! subject (vault/module-dir m) graded)
         _  (emit! (str "📊 Corrigido: " (:acertos graded) "/" (:total graded)
                        " (" (:score-pct graded) "%). Gabarito: " base-url
                        "/gabarito/" slug "/modulo/" (vault/module-dir m)
@@ -511,7 +542,8 @@
                                        :contexto (str "MATÉRIA: " subject
                                                       "\nMÓDULO ATIVO: " (:nn m) " — " (:nome m)
                                                       "\n\nMISSÃO:\n" (:mission resumo*)
-                                                      "\n\nDIAGNÓSTICO:\n" (:diagnosis resumo*))})
+                                                      "\n\nDIAGNÓSTICO:\n" (:diagnosis resumo*)
+                                                      "\n" (memoria/bloco-prompt subject))})
         html   (aula/render-html {:titulo topico :corpo corpo :versao versao}
                                  (str base-url "/entendimento/" slug))
         hsegs  (vault/module-aula-path m n (vault/slugify topico) "html")]
@@ -547,6 +579,29 @@
                        :entendimento entendimento :lacunas lacunas})
     (.delete (apply vault/subject-file subject vault/aula-aberta-path))
     (events/emit! :aula-avaliada {:subject slug :topico topico :nivel nivel :versao versao})
+    ;; memória fina (Fase 2b): o entendimento vira proposição; superar um
+    ;; trave CONTRADIZ a proposição antiga — a história fica no chronicle
+    (let [ep {:text (str "Compreendeu \"" topico "\" com explicação própria (aula v" versao ")")
+              :confidence 0.9 :importance 0.7 :decay 0.1 :tipo :episodio
+              :evidencia (str "aula v" versao)}]
+      (case nivel
+        "solido"
+        (do (memoria/contradizer! subject {:prefixo (str "Travando em \"" topico "\"")} ep)
+            (memoria/contradizer! subject {:prefixo (str "Compreendeu parcialmente \"" topico "\"")} ep))
+        "parcial"
+        (memoria/lembrar! subject
+          {:text (str "Compreendeu parcialmente \"" topico "\""
+                      (when-not (str/blank? (str lacunas))
+                        (str " — lacunas: " (trunc lacunas 80))))
+           :confidence 0.85 :importance 0.75 :decay 0.15 :tipo :lacuna
+           :evidencia (str "aula v" versao)})
+        "confuso"
+        (memoria/lembrar! subject
+          {:text (str "Travando em \"" topico "\" mesmo após aula"
+                      (when-not (str/blank? (str lacunas))
+                        (str " — " (trunc lacunas 80))))
+           :confidence 0.9 :importance 0.9 :decay 0.15 :tipo :misconception
+           :evidencia (str "aula v" versao)})))
     (emit! (str "🧠 " feedback))
     (if (= nivel "confuso")
       (if (>= versao 2)
@@ -666,7 +721,11 @@
                                          :extra "Registre com parcimônia: só demonstrações reais de aprendizado ou erro."})})]
             (when (and registrar? titulo conteudo)
               (vault/write-file! subject (vault/learning-record-path subject titulo) conteudo)
-              (events/emit! :learning-record {:subject slug :titulo titulo}))
+              (events/emit! :learning-record {:subject slug :titulo titulo})
+              ;; o título curto do record vira micro-fato da memória fina (2b)
+              (memoria/lembrar! subject {:text titulo :confidence 0.8 :importance 0.7
+                                         :decay 0.15 :tipo :episodio
+                                         :evidencia "learning-record"}))
             (when (and gerar-prova-modulo? m)
               (gerar-prova-modulo! ctx subject resumo* slug m emit!))))
         r))

@@ -9,6 +9,7 @@
             [embabel-clj.platform :as platform]
             [school.agenda :as agenda]
             [school.events :as events]
+            [school.memoria :as memoria]
             [school.professor :as professor]
             [school.review :as review]
             [school.vault :as vault]
@@ -177,8 +178,13 @@
         :post (registrar-review! slug (slurp (:body req)))
         nil))))
 
+(defn- memoria-routes [req]
+  (when (= :get (:request-method req))
+    (when-let [[_ slug] (re-matches #"/memoria/([^/]+)" (str (:uri req)))]
+      (html-resp (memoria/render-html slug)))))
+
 (defn- http-routes [req]
-  (or (review-routes req) (aula-routes req) (prova-routes req)))
+  (or (review-routes req) (memoria-routes req) (aula-routes req) (prova-routes req)))
 
 (defn -main [& _]
   (let [base-url (or (System/getenv "SCHOOL_BASE_URL") "https://integrate.api.nvidia.com")
@@ -195,6 +201,7 @@
                  :logging.level.root "warn"
                  :logging.level.Embabel log-level}})
           ag  (ec/deploy! (:platform sys) (professor/professor))]
+      (memoria/start!)  ; replay do chronicle no boot (não no 1º turno)
       (reset! sys* {:sys sys :ag ag})
       (ws/start! {:port         (some-> (System/getenv "SCHOOL_PORT") Integer/parseInt)
                   :on-start     on-start

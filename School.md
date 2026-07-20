@@ -86,11 +86,13 @@ A família de dado temporal derivado, em duas fatias:
 - **`school.review`**: sessão de revisão como página (`/review/<matéria>`), um card por vez, rating Errei/Difícil/Bom/Fácil, POST por card, FSRS no servidor.
 - Ciclo offline testado (`clojure -M:f2a-test`). Falta: dogfood da fila diária e, depois, mineração de itens `fraco` do diagnóstico e interleaving explícito entre matérias.
 
-**Fase 2b — Memória fina + trajetória (aguardando DICE↔embabel 1.0)**
+**Fase 2b — Memória fina + trajetória ✅ (em código desde 2026-07-20; [ADR-0010](docs/adr/0010-memoria-fina-dice-chronicle.md))**
 
-- **DICE** como memória fina do professor (store JSON, sem Neo4j): micro-fatos, misconceptions, episódios — injetada no prompt via `PromptContributor` e consultável como `Tool`. `DIAGNOSIS.md` segue sendo o mapa macro ([ADR-0005](docs/adr/0005-dice-chronicle-memoria-do-professor.md)).
-- **dice-chronicle** embutido na mesma JVM, consumindo os eventos de domínio da v1 (`:aula-avaliada`, `:prova-corrigida`, `:card-revisado`…): timeline, replay e time travel da trajetória do aprendiz.
-- Estado do upstream (2026-07-20): dice `0.1.1-SNAPSHOT` pina embabel `0.5.0-SNAPSHOT`; sem PR de migração 1.0. O combo lab-provado (concierge-clj) segue válido — dá pra começar a 2b no 0.5.0-SNAPSHOT quando quisermos.
+- **`school.memoria`**: DICE embutido (dice `0.1.1-SNAPSHOT` + embabel `0.5.0-SNAPSHOT`, combo lab-provado), repo in-memory decorado pelo dice-chronicle; **o log EDN é a fonte de verdade** (replay no boot, time travel via `:upto`). `DIAGNOSIS.md` segue o mapa macro.
+- **Escrita determinística** nos momentos-chave: prova corrigida (misconception/lacuna/episódio), aula avaliada (sólido CONTRADIZ o trave anterior — história auditável), learning record. Sem reviser LLM na v1 (adiado para provider pago).
+- **Leitura**: bloco de memória por confiança efetiva injetado no preamble de todos os estágios e na geração de Aula.
+- **Trajetória**: `GET /memoria/<matéria>` — memória ativa + timeline do chronicle.
+- Ciclo offline testado (`clojure -M:f2b-test`). Falta: dogfood com LLM vivo; depois, reviser LLM e contexto global do aprendiz.
 
 ### Fase 3 — Superfícies
 

@@ -29,7 +29,14 @@
   cheshire/cheshire    {:mvn/version "5.13.0"}
   ;; Fase 2a — Agenda FSRS no SQLite (ADR-0002: dado temporal fora do vault)
   com.github.seancorfield/next.jdbc {:mvn/version "1.3.955"}
-  org.xerial/sqlite-jdbc            {:mvn/version "3.46.1.3"}}
+  org.xerial/sqlite-jdbc            {:mvn/version "3.46.1.3"}
+  ;; Fase 2b — memória fina do professor (ADR-0005): DICE do ~/.m2
+  ;; (cd ../../embabel-lab/dice && mvn install -pl dice -am -DskipTests)
+  ;; + chronicle irmão. slf4j-simple excluído: quem loga aqui é o logback do
+  ;; Spring (dois providers SLF4J = IllegalStateException no boot).
+  com.embabel.dice/dice   {:mvn/version "0.1.1-SNAPSHOT"}
+  io.local/dice-chronicle {:local/root "../../embabel-lab/dice-chronicle"
+                           :exclusions [org.slf4j/slf4j-simple]}}
 
  :aliases
  {;; Fase 1: clojure -M:server  (WS em ws://localhost:7777; TUI abre a matéria)
@@ -55,5 +62,10 @@
   ;; SCHOOL_AGENDA_DB/SCHOOL_VAULT_ROOT/SCHOOL_EVENTS_FILE + clojure -M:f2a-test
   :f2a-test {:extra-paths ["dev"]
              :main-opts   ["-m" "school.dev-f2a-test"]}
+
+  ;; ciclo offline da Fase 2b (memória fina DICE+chronicle) — raiz descartável:
+  ;; SCHOOL_CHRONICLE_LOG + clojure -M:f2b-test
+  :f2b-test {:extra-paths ["dev"]
+             :main-opts   ["-m" "school.dev-f2b-test"]}
 
   :dev {:extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}}}}}

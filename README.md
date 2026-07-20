@@ -51,4 +51,8 @@ node scripts/pipe-test.mjs
 # spike-gate completo (contra SCHOOL_SPIKE=embabel clojure -M:spike)
 node scripts/spike-test.mjs
 node scripts/interrupt-test.mjs
+
+# ciclo de aula-documento (ADR-0008) — contra o server com vault descartável
+# em estágio :ensino (SCHOOL_VAULT_ROOT no server, SCHOOL_TEST_VAULT aqui):
+node scripts/aula-test.mjs
 ```

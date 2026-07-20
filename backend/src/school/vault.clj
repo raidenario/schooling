@@ -109,6 +109,30 @@
 (defn module-dir ^String [{:keys [nn nome]}]
   (str nn "-" (slugify nome)))
 
+;; -- aulas-documento (ADR-0008) ----------------------------------------------
+
+(def aula-aberta-path
+  "Estado da aula aberta da matéria: {:topico :peso :versao :n :html-segs
+   :modulo :entendimento?}. Um por matéria; some quando avaliada."
+  ["aula-aberta.edn"])
+
+(defn module-aula-path
+  "Arquivo numerado de uma aula do módulo (ext: \"html\" ou \"edn\")."
+  [m n slug ext]
+  ["modules" (module-dir m) "aulas" (format "%02d-%s.%s" n slug ext)])
+
+(defn proxima-aula-n
+  "Próximo número de aula do módulo (conta os .edn já avaliados)."
+  [subject m]
+  (let [d (subject-file subject "modules" (module-dir m) "aulas")]
+    (inc (count (filter #(str/ends-with? (.getName ^java.io.File %) ".edn")
+                        (or (.listFiles d) []))))))
+
+(defn module-acumulado-path
+  "Peso acumulado das aulas compreendidas desde a última prova do módulo."
+  [m]
+  ["modules" (module-dir m) "aulas-acumulado.edn"])
+
 (defn module-prova-path     [m] ["modules" (module-dir m) "prova.html"])
 (defn module-prova-edn-path [m] ["modules" (module-dir m) "prova.edn"])
 (defn module-respostas-path [m] ["modules" (module-dir m) "prova-respostas.edn"])

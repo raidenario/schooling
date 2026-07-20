@@ -15,6 +15,7 @@
             [embabel-clj.blackboard :as bb]
             [embabel-clj.core :as ec]
             [embabel-clj.schema :as schema]
+            [school.aula :as aula]
             [school.events :as events]
             [school.prova :as prova]
             [school.vault :as vault])
@@ -375,7 +376,9 @@
                                                "diagnóstico, com :revisao true (interleaving).")})
         _    (vault/write-edn! subject (vault/module-prova-edn-path m) p)
         html (prova/render-html p (str base-url "/respostas/" slug "/modulo/" (vault/module-dir m)))
-        _    (vault/write-file! subject (vault/module-prova-path m) html)]
+        _    (vault/write-file! subject (vault/module-prova-path m) html)
+        ;; a prova zera o acúmulo de aulas do módulo (ADR-0008)
+        _    (vault/write-edn! subject (vault/module-acumulado-path m) {:peso-total 0})]
     (events/emit! :prova-modulo-gerada {:subject slug :modulo (vault/module-dir m)})
     (emit! (str "\n\n📝 Prova do módulo " (:nn m) " pronta!\n👉 Abra: " base-url
                 "/prova/" slug "/modulo/" (vault/module-dir m)
@@ -428,9 +431,137 @@
                   " Vamos fazer a remediação e depois gero uma prova nova.")))
     {:text "" :interrupted? false}))
 
+;; -- aula-documento (ADR-0008): explicação detalhada vira página, não despejo --
+
+(def ^:private AulaCheck
+  [:map
+   [:aula-documento? {:description "true SÓ se o próximo passo pedagógico é uma explicação LONGA/do zero de um tópico — o aprendiz pediu ('explica do zero', 'não lembro', 'me ensina X direito') ou o professor prometeu explicação completa. Resposta curta, correção de exercício ou dúvida pontual => false"}
+    :boolean]
+   [:topico {:optional true :description "se true: o tópico a explicar, curto (ex: teorema de pitágoras)"}
+    :string]
+   [:peso {:optional true :description "se true: complexidade/extensão do tópico, de 1 (trivial) a 5 (grande e denso)"}
+    :int]])
+
+(def ^:private EntendimentoCheck
+  [:map
+   [:nivel {:description "solido | parcial | confuso — quanto o texto demonstra compreensão REAL (exemplo próprio e relações corretas valem mais que repetir termos da aula)"}
+    :string]
+   [:lacunas {:optional true :description "o que faltou ou está errado, 1-3 frases"}
+    :string]
+   [:feedback {:description "feedback direto ao aprendiz: 2-4 frases em pt-BR, citando o que ele escreveu"}
+    :string]])
+
+(def ^:private peso-prova-imediata 4)  ; tópico grande => prova logo após compreender
+(def ^:private peso-acumulado-prova 8) ; soma de pesos compreendidos => prova
+
+(defn- gerar-aula! [ctx subject resumo* slug m {:keys [topico peso versao lacunas]} emit!]
+  (let [peso   (max 1 (min 5 (or peso 3)))
+        versao (or versao 1)
+        n      (vault/proxima-aula-n subject m)
+        _      (emit! (str "📖 Preparando a aula sobre \"" topico "\"… (leva alguns instantes)"))
+        corpo  (aula/gerar-corpo! ctx {:llm model :topico topico :versao versao :lacunas lacunas
+                                       :contexto (str "MATÉRIA: " subject
+                                                      "\nMÓDULO ATIVO: " (:nn m) " — " (:nome m)
+                                                      "\n\nMISSÃO:\n" (:mission resumo*)
+                                                      "\n\nDIAGNÓSTICO:\n" (:diagnosis resumo*))})
+        html   (aula/render-html {:titulo topico :corpo corpo :versao versao}
+                                 (str base-url "/entendimento/" slug))
+        hsegs  (vault/module-aula-path m n (vault/slugify topico) "html")]
+    (vault/write-file! subject hsegs html)
+    (vault/write-edn! subject vault/aula-aberta-path
+                      {:topico topico :peso peso :versao versao :n n
+                       :html-segs hsegs :modulo (vault/module-dir m)})
+    (events/emit! :aula-gerada {:subject slug :topico topico :peso peso :versao versao})
+    (let [txt (str (if (> versao 1)
+                     "\n\n🔁 Nova explicação pronta — outro ângulo, mais visual."
+                     (str "\n\nAula pronta!"))
+                   "\n👉 Abra: " base-url "/aula/" slug
+                   "\n\nLeia com calma. No FINAL da página tem um campo: escreva com as "
+                   "SUAS palavras o que você entendeu e clique ENVIAR. É com base nisso "
+                   "que eu decido se reforço, se seguimos, ou se já vale uma prova.")]
+      (emit! txt)
+      {:text txt :interrupted? false})))
+
+(defn- avaliar-entendimento! [ctx subject resumo* slug m aberta emit!]
+  (let [{:keys [topico peso versao n entendimento]} aberta
+        {:keys [nivel lacunas feedback]}
+        (ask-edn! ctx {:schema* EntendimentoCheck
+                       :prompt (schema/edn-prompt EntendimentoCheck
+                                {:preamble (str "O aprendiz leu uma aula sobre \"" topico
+                                                "\" (matéria " subject ", módulo " (:nn m)
+                                                " — " (:nome m) ") e escreveu o que entendeu:"
+                                                "\n\n\"" entendimento "\"\n\nDIAGNÓSTICO ATUAL:\n"
+                                                (:diagnosis resumo*))
+                                 :extra "Julgue compreensão REAL, não paráfrase: exemplo próprio e relações causais corretas pesam mais que repetir os termos da aula."})})
+        nivel (or (#{"solido" "parcial" "confuso"} (str/lower-case (str nivel))) "parcial")]
+    (vault/write-edn! subject (vault/module-aula-path m n (vault/slugify topico) "edn")
+                      {:topico topico :peso peso :versao versao :nivel nivel
+                       :entendimento entendimento :lacunas lacunas})
+    (.delete (apply vault/subject-file subject vault/aula-aberta-path))
+    (events/emit! :aula-avaliada {:subject slug :topico topico :nivel nivel :versao versao})
+    (emit! (str "🧠 " feedback))
+    (if (= nivel "confuso")
+      (if (>= versao 2)
+        ;; dois documentos não destravaram — muda de mídia, não insiste
+        (let [txt (str "\n\nJá tentamos dois ângulos por documento — vamos destravar "
+                       "aqui no chat mesmo: me diga exatamente qual parte não fecha "
+                       "para você, do jeito que vier.")]
+          (emit! txt)
+          {:text (str feedback txt) :interrupted? false})
+        (do (emit! "\n\n🔁 Vou re-explicar por outro caminho, focando no que travou…")
+            (gerar-aula! ctx subject resumo* slug m
+                         {:topico topico :peso peso :versao (inc versao)
+                          :lacunas (str (or lacunas "")
+                                        "\n\nO QUE O APRENDIZ ESCREVEU:\n" entendimento)}
+                         emit!)))
+      ;; solido/parcial — compreendeu: acumula peso e decide EM CÓDIGO
+      (let [acum   (+ (:peso-total (or (vault/read-edn subject (vault/module-acumulado-path m))
+                                       {:peso-total 0}))
+                      peso)
+            _      (vault/write-edn! subject (vault/module-acumulado-path m) {:peso-total acum})
+            prova? (or (>= peso peso-prova-imediata) (>= acum peso-acumulado-prova))]
+        (if prova?
+          (do (emit! (str "\n\n💪 " (if (>= peso peso-prova-imediata)
+                                      "Tópico grande — vamos consolidar com uma prova antes de seguir."
+                                      "Já acumulamos bastante conteúdo — hora de uma prova de consolidação.")))
+              (gerar-prova-modulo! ctx subject resumo* slug m emit!)
+              {:text feedback :interrupted? false})
+          (let [txt (str "\n\n➡️ Seguimos! Me peça o próximo tópico quando quiser"
+                         (when (= nivel "parcial")
+                           " — e eu volto nessas lacunas mais adiante") ".")]
+            (emit! txt)
+            {:text (str feedback txt) :interrupted? false}))))))
+
+(defn- aula-leitura-system [resumo* aberta slug]
+  (str (preamble resumo*)
+       "MODO LEITURA — há uma aula aberta sobre \"" (:topico aberta)
+       "\" no navegador do aprendiz (" base-url "/aula/" slug "). Tire dúvidas "
+       "pontuais sobre a leitura, mas NÃO re-explique o conteúdo inteiro por aqui: "
+       "o próximo passo é ele escrever o que entendeu no campo no FINAL da página "
+       "e clicar ENVIAR — é dali que sai a decisão de reforçar, seguir ou provar."))
+
+(defn- pre-check-aula!
+  "Antes de streamar a resposta: o turno pede um documento de aula?"
+  [ctx subject slug m user-text]
+  (ask-edn! ctx {:schema* AulaCheck
+                 :prompt (schema/edn-prompt AulaCheck
+                          {:preamble (str "Aula da matéria \"" subject "\", módulo "
+                                          (:nn m) " — " (:nome m)
+                                          ". Mensagem do aprendiz AGORA: \"" user-text
+                                          "\"\n\nÚltimas mensagens:\n"
+                                          (->> (take-last 6 (get-history slug))
+                                               (map (fn [{:keys [role text]}]
+                                                      (str (case role :user "APRENDIZ" :assistant "PROFESSOR")
+                                                           ": " text)))
+                                               (str/join "\n")))
+                           :extra "Na dúvida, :aula-documento? false — o chat normal resolve."})}))
+
+(declare turno-ensino-chat!)
+
 (defn- turno-ensino! [ctx subject resumo* user-text emit!]
-  (let [slug (vault/slugify subject)
-        m    (:modulo resumo*)]
+  (let [slug   (vault/slugify subject)
+        m      (:modulo resumo*)
+        aberta (when m (vault/read-edn subject vault/aula-aberta-path))]
     (cond
       (and m (apply vault/exists? subject (vault/module-respostas-path m))
              (not (apply vault/exists? subject (vault/module-result-path m))))
@@ -442,18 +573,37 @@
                                slug user-text)
                emit!)
 
+      ;; entendimento chegou pela página → avaliar e decidir o próximo passo
+      (and aberta (not (str/blank? (str (:entendimento aberta)))))
+      (avaliar-entendimento! ctx subject resumo* slug m aberta emit!)
+
+      ;; aula aberta, ainda sem entendimento → consulta de leitura
+      aberta
+      (stream! ctx (->messages (aula-leitura-system resumo* aberta slug) slug user-text)
+               emit!)
+
       :else
-      (let [system (str (preamble resumo*)
+      (let [{:keys [aula-documento? topico peso]} (when m (pre-check-aula! ctx subject slug m user-text))]
+        (if (and aula-documento? (not (str/blank? (str topico))))
+          (gerar-aula! ctx subject resumo* slug m {:topico topico :peso peso} emit!)
+          (turno-ensino-chat! ctx subject resumo* slug m user-text emit!))))))
+
+(defn- turno-ensino-chat! [ctx subject resumo* slug m user-text emit!]
+  (let [system (str (preamble resumo*)
                         "ESTÁGIO: ensino do módulo ativo"
                         (when m (str " (" (:nn m) " — " (:nome m) ")"))
                         ".\n\nDIAGNÓSTICO:\n" (:diagnosis resumo*)
                         "\n\nCURRÍCULO:\n" (:curriculum resumo*)
                         "\n\nEnsine o módulo ativo na zona de desenvolvimento "
                         "proximal: explicações curtas, exemplos, exercícios com "
-                        "feedback imediato. Cite o diagnóstico ao adaptar. Quando "
-                        "sentir o módulo consolidado, ofereça a prova de "
-                        "consolidação. Se notar fundação faltante FORA da matéria, "
-                        "recomende estudá-la antes — mas o aprendiz é soberano.")
+                        "feedback imediato. Cite o diagnóstico ao adaptar. "
+                        "NUNCA despeje explicação longa no chat: para explicar um "
+                        "tópico do zero/em detalhe, ofereça preparar uma AULA "
+                        "completa (página bonita que o sistema gera quando o "
+                        "aprendiz aceitar). Quando sentir o módulo consolidado, "
+                        "ofereça a prova de consolidação. Se notar fundação "
+                        "faltante FORA da matéria, recomende estudá-la antes — "
+                        "mas o aprendiz é soberano.")
             r (stream! ctx (->messages system slug user-text) emit!)]
         (when-not (:interrupted? r)
           (let [{:keys [registrar? titulo conteudo gerar-prova-modulo?]}
@@ -467,7 +617,7 @@
               (events/emit! :learning-record {:subject slug :titulo titulo}))
             (when (and gerar-prova-modulo? m)
               (gerar-prova-modulo! ctx subject resumo* slug m emit!))))
-        r))))
+        r))
 
 ;; ---------------------------------------------------------------------------
 ;; estágio :capstone

@@ -93,7 +93,45 @@
                   (turno emit! ch "[O aprendiz clicou em CONCLUIR e enviou as respostas da prova.]")))))
           {:status 200 :headers {"Content-Type" "text/plain; charset=utf-8"} :body "ok"}))))
 
-(defn- http-routes [req]
+;; -- aulas-documento por HTTP (ADR-0008) --------------------------------------
+
+(defn- receber-entendimento! [slug body]
+  (let [texto  (str/trim (str (get (json/parse-string body) "texto")))
+        aberta (vault/read-edn slug vault/aula-aberta-path)]
+    (cond
+      (nil? aberta)
+      {:status 404 :headers {"Content-Type" "text/plain; charset=utf-8"}
+       :body "nenhuma aula aberta para esta matéria"}
+
+      (str/blank? texto)
+      {:status 400 :headers {"Content-Type" "text/plain; charset=utf-8"}
+       :body "texto vazio"}
+
+      :else
+      (do (vault/write-edn! slug vault/aula-aberta-path (assoc aberta :entendimento texto))
+          (events/emit! :entendimento-recebido {:subject slug :topico (:topico aberta)})
+          ;; avaliação automática no chat da sessão ativa
+          (let [{:keys [subject ch]} @session]
+            (when (and ch subject (= (vault/slugify subject) slug))
+              (ws/send! ch {:type "info" :text "entendimento recebido — avaliando…"})
+              (ws/start-turn! ch
+                (fn [emit!]
+                  (turno emit! ch "[O aprendiz leu a aula e enviou o que entendeu pela página.]")))))
+          {:status 200 :headers {"Content-Type" "text/plain; charset=utf-8"} :body "ok"}))))
+
+(defn- aula-routes [req]
+  (let [uri (str (:uri req)) method (:request-method req)]
+    (cond
+      (= method :get)
+      (when-let [[_ slug] (re-matches #"/aula/([^/]+)" uri)]
+        (html-resp (when-let [aberta (vault/read-edn slug vault/aula-aberta-path)]
+                     (apply vault/read-file slug (:html-segs aberta)))))
+
+      (= method :post)
+      (when-let [[_ slug] (re-matches #"/entendimento/([^/]+)" uri)]
+        (receber-entendimento! slug (slurp (:body req)))))))
+
+(defn- prova-routes [req]
   (let [uri    (:uri req)
         method (:request-method req)
         [_ tipo-rota slug resto] (re-matches #"/(prova|gabarito|respostas)/([^/]+)(?:/(.+))?" (str uri))
@@ -108,6 +146,9 @@
           [:gabarito :get]   (html-resp (apply vault/read-file slug (:gabarito paths)))
           [:respostas :post] (receber-respostas! slug paths (slurp (:body req)))
           nil)))))
+
+(defn- http-routes [req]
+  (or (aula-routes req) (prova-routes req)))
 
 (defn -main [& _]
   (let [base-url (or (System/getenv "SCHOOL_BASE_URL") "https://integrate.api.nvidia.com")

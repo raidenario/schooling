@@ -44,4 +44,8 @@
   :render-fixture {:extra-paths ["dev"]
                    :main-opts   ["-m" "school.dev-render-fixture"]}
 
+  ;; renderiza uma aula de exemplo (ADR-0008) para inspeção visual
+  :render-aula {:extra-paths ["dev"]
+                :main-opts   ["-m" "school.dev-render-aula"]}
+
   :dev {:extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}}}}}

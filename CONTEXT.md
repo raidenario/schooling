@@ -49,6 +49,15 @@ Conversa pré-prova sobre conceitos-chave da matéria que dosa o nível da prova
 **Modo consulta**:
 O comportamento do professor enquanto uma prova está aberta: orienta socraticamente, nunca dá a resposta.
 
+**Aula**:
+Explicação detalhada de um tópico como documento HTML rico (não despejo no chat), encerrada pelo Entendimento do aprendiz. Tem peso de complexidade (1-5), que alimenta a decisão pós-aula: re-explicar, seguir, ou prova.
+
+**Entendimento**:
+O que o aprendiz escreve com as próprias palavras após ler uma Aula — o sinal que o professor avalia (sólido | parcial | confuso) para decidir o próximo passo.
+
+**Peso acumulado**:
+Soma dos pesos das Aulas compreendidas de um módulo desde a última prova; ao cruzar o limiar, dispara a prova de consolidação.
+
 **Capstone**:
 O exame final de uma matéria: entregável real julgado contra a missão, seguido de defesa.
 

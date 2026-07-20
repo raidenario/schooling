@@ -18,12 +18,15 @@ function Tem($cmd) { [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 # --- 1. scoop + ferramentas --------------------------------------------------
 if (-not (Tem "scoop")) {
   Passo "instalando o scoop"
-  Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+  # rodando via -ExecutionPolicy Bypass, o escopo Process sobrepoe o CurrentUser
+  # e o Set-ExecutionPolicy reclama (ExecutionPolicyOverride) MESMO tendo
+  # funcionado — aviso benigno, nao pode derrubar o script
+  try { Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force -ErrorAction Stop } catch {}
   Invoke-RestMethod get.scoop.sh | Invoke-Expression
   $env:Path = "$env:USERPROFILE\scoop\shims;$env:Path"
 }
 Passo "ferramentas (so instala o que falta)"
-scoop bucket add java 2>$null | Out-Null
+try { scoop bucket add java *> $null } catch {}
 if (-not (Tem "git"))     { scoop install git }
 if (-not (Tem "java"))    { scoop install temurin21-jdk }
 if (-not (Tem "clojure")) { scoop install clojure }

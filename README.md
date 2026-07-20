@@ -19,8 +19,18 @@ Obsidian, dado temporal fora dele (ADR-0002); formatos das skills como contrato 
 
 Pré-requisitos: JDK 21+, Clojure CLI, Node 20+ + pnpm, `embabel-clj` clonado como
 irmão do repo (`../embabel-lab/embabel-clj`), jars `embabel-agent 0.5.0-SNAPSHOT`
-no `~/.m2`, e `NVIDIA_APIKEY` no ambiente (provider OpenAI-compatível; troque com
-`SCHOOL_BASE_URL`/`SCHOOL_APIKEY`/`SCHOOL_MODEL`).
+e `dice` no `~/.m2`, e `NVIDIA_APIKEY` no ambiente (provider OpenAI-compatível;
+troque com `SCHOOL_BASE_URL`/`SCHOOL_APIKEY`/`SCHOOL_MODEL`).
+
+```powershell
+# um comando só: sobe o backend escondido (ou reaproveita um já de pé),
+# espera ficar pronto e abre o TUI; ao sair, derruba o que ele subiu.
+schooling                # ou: schooling <matéria>
+```
+
+O comando é um shim em `%USERPROFILE%\bin\schooling.cmd` apontando para
+[scripts/schooling.ps1](scripts/schooling.ps1) (logs do backend em
+`%LOCALAPPDATA%\school\backend.log`). Para rodar as pontas separadas:
 
 ```powershell
 # backend (ws://localhost:7777)

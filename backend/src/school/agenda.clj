@@ -74,6 +74,14 @@
 (defn card-count [subject]
   (:n (q1 ["select count(*) as n from cards where subject=? and suspended=0" subject])))
 
+(defn card-exists? [subject slug]
+  (some? (q1 ["select id from cards where subject=? and slug=?" subject slug])))
+
+(defn card-info
+  "Identidade de um card pelo id: {:subject :slug :path}, ou nil."
+  [card-id]
+  (q1 ["select subject, slug, path from cards where id=?" card-id]))
+
 ;; ---------------------------------------------------------------------------
 ;; estado FSRS <-> linha da agenda
 ;; ---------------------------------------------------------------------------
@@ -100,6 +108,27 @@
             limit ?" subject (str now) (long limit)])
        (mapv (fn [row] {:id (:id row) :subject (:subject row) :slug (:slug row)
                         :path (:path row) :state (row->state row)}))))
+
+(defn due-cards-all
+  "Fila do dia GLOBAL, interleaved entre matérias (round-robin na ordem das
+   matérias): revisar em contexto alternado fortalece a discriminação —
+   o interleaving explícito da Fase 2a. `limit` corta a fila."
+  [^Instant now limit]
+  (let [rows (->> (q ["select c.id, c.subject, c.slug, c.path, a.stability,
+                              a.difficulty, a.reps, a.lapses, a.last_review,
+                              a.due, a.interval_days
+                       from cards c left join agenda a on a.card_id = c.id
+                       where c.suspended=0 and (a.due is null or a.due <= ?)
+                       order by a.due is null desc, a.due asc" (str now)])
+                  (mapv (fn [row] {:id (:id row) :subject (:subject row)
+                                   :slug (:slug row) :path (:path row)
+                                   :state (row->state row)})))
+        filas (vals (group-by :subject rows))] ; cada fila preserva a ordem due
+    (loop [filas (vec filas) out []]
+      (if (or (empty? filas) (>= (count out) limit))
+        (vec (take limit out))
+        (recur (into [] (keep #(not-empty (subvec % 1))) filas)
+               (into out (keep first) filas))))))
 
 (defn review!
   "Aplica FSRS ao card e persiste: agenda (upsert) + review_log (append).
@@ -138,3 +167,12 @@
                       and (a.due is null or a.due <= ?)" subject (str now)]))
    :reviews (:n (q1 ["select count(*) as n from review_log r
                       join cards c on c.id=r.card_id where c.subject=?" subject]))})
+
+(defn stats-all
+  "Resumo global (todas as matérias): total, due agora, revisões feitas."
+  [^Instant now]
+  {:total (:n (q1 ["select count(*) as n from cards where suspended=0"]))
+   :due   (:n (q1 ["select count(*) as n from cards c
+                    left join agenda a on a.card_id=c.id
+                    where c.suspended=0 and (a.due is null or a.due <= ?)" (str now)]))
+   :reviews (:n (q1 ["select count(*) as n from review_log"]))})

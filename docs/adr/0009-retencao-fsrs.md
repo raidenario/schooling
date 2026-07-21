@@ -22,3 +22,12 @@ A retenção segue a divisão de trabalho da casa:
 - A correção de prova agora também minera cards e anuncia a fila no chat.
 - `review_log` acumula o histórico que permitirá otimizar os pesos FSRS por aprendiz no futuro.
 - Teste offline do ciclo completo: `clojure -M:f2a-test` (raízes descartáveis).
+
+## Fechamento da fatia (2026-07-20)
+
+Os dois "depois" entraram, fechando a Fase 2a em código:
+
+- **Itens `fraco` do diagnóstico viram cards de recall** — na linha desta ADR: gate e dedup DETERMINÍSTICOS (parse do Mapa de competências do DIAGNOSIS.md; slug `diag-<competência>` na Agenda), e só o conteúdo frente/verso sai do LLM via `create-edn!` (uma chamada em lote por diagnóstico novo), porque competência é semântica, não dado estruturado de prova. Roda após cada diagnóstico escrito (prova fria e módulo); falha na mineração nunca derruba a correção. Evento: `:cards-minerados` com `:prova "diagnostico"`.
+- **Interleaving explícito entre matérias** — `GET/POST /review` (sem slug): fila do dia global montada em round-robin entre as matérias com card vencido, badge de matéria por card na página; o servidor anuncia a fila global na abertura do TUI. A fila por matéria (`/review/<slug>`) continua existindo.
+
+Resta apenas o dogfood da fila diária (uso real).

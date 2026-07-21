@@ -38,12 +38,14 @@
     {:frente (md-lite frente) :verso (md-lite verso)}))
 
 (defn carrega-cards
-  "Materializa os cards due para a página: lê o conteúdo de cada um do vault."
-  [subject due]
+  "Materializa os cards due para a página: lê o conteúdo de cada um do vault.
+   Cada linha da fila traz o próprio :subject — funciona igual para a fila de
+   uma matéria e para a global interleaved (due-cards-all)."
+  [due]
   (into []
-        (keep (fn [{:keys [id path]}]
+        (keep (fn [{:keys [id subject path]}]
                 (when-let [md (apply vault/read-file subject (str/split path #"/"))]
-                  (assoc (parse-card md) :id id))))
+                  (assoc (parse-card md) :id id :subject subject))))
         due))
 
 (def ^:private css "
@@ -58,6 +60,8 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--fundo);color:v
 main{max-width:680px;margin:0 auto;padding:26px 16px 40px}
 .card{background:#fff;border:2px solid var(--cinza);border-radius:16px;padding:26px;
 min-height:220px;font-size:17px;line-height:1.65}
+.mat{display:none;background:var(--azul);color:#fff;border-radius:8px;padding:2px 10px;
+font-size:12px;font-weight:800;margin-bottom:14px}
 .card p{margin:0 0 12px}
 .card pre{background:#2b3137;color:#e6edf3;padding:12px;border-radius:10px;overflow-x:auto;
 font-size:14px;margin:0 0 12px;font-family:Consolas,monospace;white-space:pre-wrap}
@@ -84,6 +88,9 @@ const total=CARDS.length;
 function atual(){return CARDS[i];}
 function render(){
   const c=atual();
+  const m=document.getElementById('mat');
+  if(c.mat){m.textContent='📚 '+c.mat;m.style.display='inline-block';}
+  else{m.style.display='none';}
   document.getElementById('frente').innerHTML=c.frente;
   document.getElementById('verso').innerHTML=c.verso;
   document.getElementById('verso').style.display='none';
@@ -117,16 +124,18 @@ async function rate(r){
 if(total>0)render();
 ")
 
+(defn- json-str ^String [s]
+  (-> (str s) (str/replace "\\" "\\\\") (str/replace "\"" "\\\"")
+      (str/replace "\n" "\\n")))
+
 (defn- json-cards ^String [cards]
   (str "[" (str/join ","
-             (for [{:keys [id frente verso]} cards]
+             (for [{:keys [id frente verso mat]} cards]
                (str "{\"id\":" id
-                    ",\"frente\":\"" (-> frente (str/replace "\\" "\\\\")
-                                        (str/replace "\"" "\\\"")
-                                        (str/replace "\n" "\\n")) "\""
-                    ",\"verso\":\"" (-> verso (str/replace "\\" "\\\\")
-                                       (str/replace "\"" "\\\"")
-                                       (str/replace "\n" "\\n")) "\"}")))
+                    ",\"frente\":\"" (json-str frente) "\""
+                    ",\"verso\":\"" (json-str verso) "\""
+                    (when mat (str ",\"mat\":\"" (json-str mat) "\""))
+                    "}")))
        "]"))
 
 (defn render-html
@@ -144,7 +153,8 @@ if(total>0)render();
               (when stats (str " — " (:total stats) " no total, "
                                (:reviews stats) " revisões feitas"))
               ". Volte amanhã.</p></div>")
-         (str "<div id='sessao'><div class='card'><div id='frente'></div>"
+         (str "<div id='sessao'><div class='card'><small class='mat' id='mat'></small>"
+              "<div id='frente'></div>"
               "<div class='verso' id='verso'></div></div>"
               "<div class='acoes'>"
               "<button id='mostrar' onclick='mostrar()'>MOSTRAR RESPOSTA</button></div>"

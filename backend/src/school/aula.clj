@@ -18,12 +18,12 @@
 
 (defn gerar-corpo!
   "Fragmento HTML do corpo da aula, bloqueante. `lacunas` (re-explicação)
-   carrega o que travou na versão anterior — o ângulo TEM que mudar."
-  ^String [ctx {:keys [llm topico contexto versao lacunas]}]
-  (-> (schema/ask ctx
-        {:llm llm :max-tokens 8192 :timeout-s 300
-         :prompt
-         (str "Você é o professor do School escrevendo uma AULA COMPLETA, em pt-BR, "
+   carrega o que travou na versão anterior — o ângulo TEM que mudar.
+   `:ask-fn` (opcional) troca o transporte (reasoning — ADR-0011)."
+  ^String [ctx {:keys [llm topico contexto versao lacunas ask-fn]}]
+  (-> ((or ask-fn
+           #(schema/ask ctx {:llm llm :max-tokens 8192 :timeout-s 300 :prompt %}))
+       (str "Você é o professor do School escrevendo uma AULA COMPLETA, em pt-BR, "
               "sobre \"" topico "\" — um documento web para o aprendiz LER com calma "
               "(não é chat: capriche na estrutura e no visual).\n\n"
               "CONTEXTO:\n" contexto "\n\n"
@@ -48,7 +48,7 @@
               "- NADA de <script>, links externos, imagens externas ou formulários — a "
               "página já tem o campo de entendimento no final.\n"
               "- Feche com <h2>Recapitulando</h2> e 3-5 bullets.\n\n"
-              "Responda SOMENTE com o fragmento HTML.")})
+              "Responda SOMENTE com o fragmento HTML."))
       schema/clean-fences
       str/trim))
 

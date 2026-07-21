@@ -41,11 +41,14 @@
 
 (defn gerar!
   "Gera a Prova como dados via create-edn! (prompt fixo + contexto do chamador).
-   `contexto` descreve matéria/missão/calibragem/diagnóstico/interleaving."
-  [ctx {:keys [llm titulo contexto n-questoes] :or {n-questoes 8}}]
+   `contexto` descreve matéria/missão/calibragem/diagnóstico/interleaving.
+   `:ask-fn` (opcional) troca o transporte — é como o reasoning entra (ADR-0011)
+   sem que a validação/retry saiam daqui."
+  [ctx {:keys [llm titulo contexto n-questoes ask-fn] :or {n-questoes 8}}]
   (-> (schema/create-edn! ctx
-        {:schema ProvaSchema :llm llm :max-tokens 8192 :timeout-s 300 :retries 2
-         :prompt (schema/edn-prompt ProvaSchema
+        (cond->
+         {:schema ProvaSchema :llm llm :max-tokens 8192 :timeout-s 300 :retries 2
+          :prompt (schema/edn-prompt ProvaSchema
                   {:preamble (str "Você é um elaborador de provas do School. Gere a prova \""
                                   titulo "\" com EXATAMENTE " n-questoes " questões de "
                                   "alternativa, da mais fácil à mais difícil, DOSADAS pelo "
@@ -57,7 +60,8 @@
                                ":explicacao curta e didática. Conteúdo em pt-BR.\n"
                                "Exemplo de questão: {:id \"q1\" :enunciado \"O que imprime?\" "
                                ":contexto \"let x = 1\" :alternativas [{:letra \"a\" :texto \"1\"} "
-                               "{:letra \"b\" :texto \"erro\"}] :correta \"a\" :explicacao \"...\"}")})})
+                               "{:letra \"b\" :texto \"erro\"}] :correta \"a\" :explicacao \"...\"}")})}
+          ask-fn (assoc :ask-fn ask-fn)))
       (assoc :titulo titulo)
       valida-consistencia!))
 

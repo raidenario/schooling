@@ -74,7 +74,13 @@ A história auditável do aprendizado — a sequência de eventos que explica po
 O estado de agendamento FSRS dos flashcards (stability, difficulty, due date, review log) — dado temporal, separado da prosa.
 
 **Card**:
-Flashcard minerado automaticamente de um erro (questão errada ou 🤷 de prova): frente = enunciado, verso = correta + explicação, com evidência. Conteúdo no vault (`cards/`), agendamento na Agenda; a mesma lacuna nunca vira dois cards.
+Flashcard minerado automaticamente de um erro (questão errada ou 🤷 de prova — código puro) ou de um item `fraco` do Diagnóstico (gate/dedup em código, conteúdo de recall via LLM): frente = pergunta, verso = resposta + explicação, com evidência. Conteúdo no vault (`cards/`), agendamento na Agenda; a mesma lacuna nunca vira dois cards.
 
 **Fila do dia**:
-Os cards vencidos agora (`/review/<matéria>`): novos primeiro, depois por vencimento; cada rating reagenda na hora via FSRS.
+Os cards vencidos agora: novos primeiro, depois por vencimento; cada rating reagenda na hora via FSRS. Por matéria em `/review/<matéria>`, ou global em `/review` — interleaved em round-robin entre as matérias, com badge de matéria por card.
+
+**Pesquisa**:
+Busca web ORQUESTRADA em código (nunca tool-call solto do modelo): o sistema gera queries, busca no Tavily e aterra a Aula nas fontes. Dispara ao gerar Aula, ao escrever o currículo e sob demanda no chat.
+
+**Recursos**:
+O catálogo de fontes web da matéria (`RESOURCES.md`), acumulado e dedup por URL — o registro auditável do que a Pesquisa trouxe, legível e editável no Obsidian.

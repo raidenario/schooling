@@ -30,7 +30,8 @@ Língua do domínio: [CONTEXT.md](CONTEXT.md). Decisões: [docs/adr/](docs/adr/)
 - Embabel pinado em `0.5.0-SNAPSHOT` — a família que o DICE exige (verificado 2026-07-20: upstream do dice sem migração 1.0). O embabel-clj já roda no 1.0.0 GA com interop adaptativa; sobe tudo junto quando o DICE acompanhar.
 - Servidor WebSocket em Clojure (http-kit ou ring/jetty); Spring sobe só porque o Embabel exige (padrão `platform.clj` do embabel-clj).
 - Protocolo front↔back: WebSocket (bidirecional simplifica interrupção mid-stream); trocar por SSE+POST é barato se incomodar.
-- Modelo: `z-ai/glm-5.2` via NVIDIA como professor padrão (`SCHOOL_MODEL` troca; DeepSeek V4 Pro e Inkling no catálogo — decisão 2026-07-19).
+- Modelo: `z-ai/glm-5.2` via NVIDIA como professor padrão (`SCHOOL_MODEL` troca; DeepSeek V4 Pro e Inkling no catálogo — decisão 2026-07-19). Reasoning SELETIVO por ponto de chamada ([ADR-0011](docs/adr/0011-reasoning-seletivo-por-chamada.md); spike 3/3, implementado em 2026-07-20 via `school.llm`): ON na prosa (pensando visível no TUI, esmaecido) e no conteúdo bloqueante; OFF nos judges de roteamento e cards.
+- Pesquisa web ORQUESTRADA em código ([ADR-0012](docs/adr/0012-pesquisa-web-orquestrada.md); `school.research`, Tavily via `SCHOOL_SEARCH_APIKEY` opcional): o sistema gera queries → busca → aterra a Aula nas fontes e cataloga no `RESOURCES.md`. Dispara ao gerar Aula, ao escrever o currículo e sob demanda no chat; graciosa sem chave. NÃO é tool-call do modelo (que vaza no free tier) — é fluxo determinístico.
 - Provas continuam HTML self-contained abertos no browser (contrato de formato); o TUI só aponta e coleta respostas.
 - Conteúdo em pt-BR; código/exercícios na língua da matéria.
 
@@ -74,17 +75,17 @@ Uma aula mínima de ponta a ponta: ação GOAP (embabel-clj) → chat Embabel/Sp
 
 `school learn <matéria>` e `school continue <matéria>` no TUI, com paridade agent-schools: entrevista de missão → prova fria → DIAGNOSIS.md → CURRICULUM.md → ensino do módulo em chat → prova de consolidação → adaptação citando o diagnóstico. O backend já emite **eventos de domínio** (prova corrigida, módulo passou, status mudou) — sem consumidor ainda; é o gancho da Fase 2 ([ADR-0005](docs/adr/0005-dice-chronicle-memoria-do-professor.md)). Pronto quando: uma matéria real estudada por uma semana inteira só pelo TUI, com o vault legível no Obsidian e operável pelo Claude Code. **O que falta é o dogfood** — o fluxo está em código e provado por partes ao vivo; o loop ensino→consolidação→capstone e a semana de uso real ainda não rodaram.
 
-### Fase 2 — Memória (fatiada em 2026-07-20; [ADR-0009](docs/adr/0009-retencao-fsrs.md))
+### Fase 2 — Memória ✅ (fatiada em 2026-07-20; concluída em código em 2026-07-20; [ADR-0009](docs/adr/0009-retencao-fsrs.md))
 
-A família de dado temporal derivado, em duas fatias:
+A família de dado temporal derivado, em duas fatias — **ambas concluídas em código**; o que resta é dogfood (uso real, junto com a semana de estudo da Fase 1):
 
-**Fase 2a — Retenção ✅ (em código desde 2026-07-20)**
+**Fase 2a — Retenção ✅ (em código desde 2026-07-20; completa em 2026-07-20)**
 
 - **`school.fsrs`**: FSRS-5 puro (variante long-term), determinístico, testado.
 - **`school.agenda`**: estado de agendamento no SQLite (`SCHOOL_AGENDA_DB`, fora do OneDrive) — cards, agenda FSRS, review_log append-only.
-- **`school.cards`**: mineração em código, sem LLM — questão errada/🤷 de prova corrigida vira card no vault (`cards/NNNN-<slug>.md`), dedup por slug; a correção anuncia a fila.
-- **`school.review`**: sessão de revisão como página (`/review/<matéria>`), um card por vez, rating Errei/Difícil/Bom/Fácil, POST por card, FSRS no servidor.
-- Ciclo offline testado (`clojure -M:f2a-test`). Falta: dogfood da fila diária e, depois, mineração de itens `fraco` do diagnóstico e interleaving explícito entre matérias.
+- **`school.cards`**: mineração em código, sem LLM — questão errada/🤷 de prova corrigida vira card no vault (`cards/NNNN-<slug>.md`), dedup por slug; a correção anuncia a fila. **Itens `fraco` do diagnóstico** também viram cards de recall: gate e dedup determinísticos (parse do Mapa de competências, slug `diag-<competência>`), só o conteúdo frente/verso sai do LLM (`create-edn!`) — o "depois" previsto no ADR-0009; falha na mineração nunca derruba a correção.
+- **`school.review`**: sessão de revisão como página (`/review/<matéria>`), um card por vez, rating Errei/Difícil/Bom/Fácil, POST por card, FSRS no servidor. **Interleaving explícito entre matérias**: `/review` (sem matéria) monta a fila do dia global em round-robin entre matérias, com badge de matéria por card; o TUI anuncia a fila global na abertura quando há cards vencidos.
+- Ciclo offline testado (`clojure -M:f2a-test`, incluindo mineração de fracos e fila global). Falta só o dogfood da fila diária.
 
 **Fase 2b — Memória fina + trajetória ✅ (em código desde 2026-07-20; [ADR-0010](docs/adr/0010-memoria-fina-dice-chronicle.md))**
 
@@ -92,7 +93,7 @@ A família de dado temporal derivado, em duas fatias:
 - **Escrita determinística** nos momentos-chave: prova corrigida (misconception/lacuna/episódio), aula avaliada (sólido CONTRADIZ o trave anterior — história auditável), learning record. Sem reviser LLM na v1 (adiado para provider pago).
 - **Leitura**: bloco de memória por confiança efetiva injetado no preamble de todos os estágios e na geração de Aula.
 - **Trajetória**: `GET /memoria/<matéria>` — memória ativa + timeline do chronicle.
-- Ciclo offline testado (`clojure -M:f2b-test`). Falta: dogfood com LLM vivo; depois, reviser LLM e contexto global do aprendiz.
+- Ciclo offline testado (`clojure -M:f2b-test`). Falta só o dogfood com LLM vivo. Reviser LLM e contexto global do aprendiz seguem **adiados por decisão** (ADR-0010) — são evolução pós-Fase 2, não pendência dela.
 
 ### Fase 3 — Superfícies
 

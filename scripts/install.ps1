@@ -68,7 +68,22 @@ $clones = @(
 foreach ($c in $clones) {
   $alvo = Join-Path $BaseDir $c.dir
   if (Test-Path (Join-Path $alvo ".git")) {
-    Write-Host "    $($c.dir): ja clonado" -ForegroundColor DarkGray
+    # o app (schooling) muda a cada versao — ATUALIZA (re-rodar o install
+    # passa a trazer a versao nova, como o cabecalho promete). Os irmaos
+    # (embabel-clj/dice/chronicle) mudam raro e tem versao pinada: ficam como
+    # estao pra nao surpreender. `git pull --ff-only` nunca cria merge nem
+    # sobrescreve trabalho local — se divergir, so avisa.
+    if ($c.dir -eq "schooling") {
+      Write-Host "    schooling: atualizando (git pull)" -ForegroundColor DarkGray
+      Push-Location $alvo
+      git pull --ff-only
+      if ($LASTEXITCODE -ne 0) {
+        Write-Host "    (nao consegui atualizar sozinho — rode 'git pull' em $alvo)" -ForegroundColor Yellow
+      }
+      Pop-Location
+    } else {
+      Write-Host "    $($c.dir): ja clonado" -ForegroundColor DarkGray
+    }
   } else {
     git clone $c.url $alvo
   }

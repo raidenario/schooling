@@ -71,6 +71,7 @@
 (def mission-path    ["MISSION.md"])
 (def diagnosis-path  ["DIAGNOSIS.md"])
 (def curriculum-path ["CURRICULUM.md"])
+(def resources-path  ["RESOURCES.md"]) ; catálogo de fontes web (ADR-0012)
 (def calibragem-path ["calibragem.md"])
 (def prova-fria-path ["prova-fria.html"])
 (def prova-fria-edn-path       ["prova-fria.edn"])

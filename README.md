@@ -32,7 +32,10 @@ Pré-requisitos (o install.ps1 cuida de todos): JDK 21+, Clojure CLI, Node 20+ +
 pnpm, `embabel-clj` e `dice-chronicle` clonados como irmãos em
 `../embabel-lab/`, jars `embabel-agent 0.5.0-SNAPSHOT` e `dice` no `~/.m2`, e
 `NVIDIA_APIKEY` no ambiente (provider OpenAI-compatível; troque com
-`SCHOOL_BASE_URL`/`SCHOOL_APIKEY`/`SCHOOL_MODEL`).
+`SCHOOL_BASE_URL`/`SCHOOL_APIKEY`/`SCHOOL_MODEL`). Opcional:
+`SCHOOL_SEARCH_APIKEY` (chave Tavily) liga a pesquisa web que aterra as aulas
+em fontes atuais e as cataloga no `RESOURCES.md` — sem ela o School roda igual,
+só sem pesquisa (ADR-0012).
 
 ```powershell
 # um comando só: sobe o backend escondido (ou reaproveita um já de pé),
@@ -74,6 +77,9 @@ clojure -M:f2a-test
 # dice instalado no ~/.m2 (cd ..\..\embabel-lab\dice; mvn install -pl dice -am -DskipTests)
 $env:SCHOOL_CHRONICLE_LOG="C:\tmp\chronicle-teste.edn"
 clojure -M:f2b-test
+
+# pesquisa web orquestrada (ADR-0012) offline — mocks de LLM e HTTP:
+clojure -M:research-test
 
 # protocolo WS (contra o backend em modo fake: SCHOOL_SPIKE=fake clojure -M:spike)
 cd tui

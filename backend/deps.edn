@@ -72,4 +72,14 @@
   :f2b-bench {:extra-paths ["dev"]
               :main-opts   ["-m" "school.dev-f2b-bench"]}
 
+  ;; pesquisa web orquestrada (ADR-0012) offline — sem LLM/HTTP (mocks):
+  ;; SCHOOL_VAULT_ROOT/SCHOOL_EVENTS_FILE descartáveis + clojure -M:research-test
+  :research-test {:extra-paths ["dev"]
+                  :main-opts   ["-m" "school.dev-research-test"]}
+
+  ;; smoke AO VIVO do Tavily (round-trip real) — precisa SCHOOL_SEARCH_APIKEY:
+  ;; clojure -M:research-live "sua query"
+  :research-live {:extra-paths ["dev"]
+                  :main-opts   ["-m" "school.dev-research-live"]}
+
   :dev {:extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}}}}}

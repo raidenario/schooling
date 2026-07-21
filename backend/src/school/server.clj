@@ -19,12 +19,40 @@
 (defonce sys* (atom nil))
 (defonce session (atom nil)) ; {:subject :ch} — um aprendiz, uma matéria por vez
 
+(defn- modo-de
+  "O modo FINO do professor para o TUI colorir — mais granular que o estágio
+   GOAP (calibragem e consulta compartilham o :prova-fria por baixo):
+     calibragem — missão feita, prova fria ainda não gerada
+     consulta   — uma prova (fria ou de módulo) está aberta sem correção
+     normal     — todo o resto"
+  ^String [subject]
+  (if (str/blank? (str subject))
+    "normal"
+    (let [r (vault/resumo subject)]
+      (cond
+        (and (= :prova-fria (:stage r)) (:prova-gerada? r)
+             (not (apply vault/exists? subject vault/prova-fria-respostas-path)))
+        "consulta"
+
+        (and (:modulo r) (:modulo-prova-gerada? r)
+             (not (:modulo-prova-corrigida? r)))
+        "consulta"
+
+        (= :prova-fria (:stage r))
+        "calibragem"
+
+        :else "normal"))))
+
+(defn- enviar-modo! [ch subject]
+  (ws/send! ch {:type "modo" :modo (modo-de subject)}))
+
 (defn- anunciar-materia! [ch subject]
   (let [r (vault/resumo subject)]
     (ws/send! ch {:type "info"
                   :text (str "matéria: " subject
                              " · estágio: " (name (:stage r))
-                             " · vault: " (:dir r))})))
+                             " · vault: " (:dir r))})
+    (enviar-modo! ch subject)))
 
 (defn- on-start
   "start com matéria abre a matéria; sem matéria (fluxo normal do TUI) só
@@ -32,12 +60,16 @@
   [ch subject]
   (if (str/blank? (str subject))
     (do (reset! session {:subject nil :ch ch})
-        (let [existentes (vault/list-subjects)]
+        (let [existentes (vault/list-subjects)
+              due        (:due (agenda/stats-all (java.time.Instant/now)))]
           (ws/send! ch {:type "info"
-                        :text (if (seq existentes)
-                                (str "matérias: " (str/join ", " existentes)
-                                     " — continue uma ou diga o que quer aprender")
-                                "diga o que você quer aprender")})))
+                        :text (str (if (seq existentes)
+                                     (str "matérias: " (str/join ", " existentes)
+                                          " — continue uma ou diga o que quer aprender")
+                                     "diga o que você quer aprender")
+                                   (when (pos? due)
+                                     (str " · 🃏 " due " cards para revisar: "
+                                          professor/base-url "/review")))})))
     (do (reset! session {:subject subject :ch ch})
         (anunciar-materia! ch subject))))
 
@@ -59,6 +91,7 @@
            (anunciar-materia! ch nova)
            (turno emit! ch text 1))
        (do (ws/send! ch {:type "info" :text (str "estágio: " (get-in r [:slots :stage]))})
+           (enviar-modo! ch (:subject @session))
            (when (get-in r [:slots :interrupted?])
              (throw (InterruptedException. "aula interrompida pelo aprendiz"))))))))
 
@@ -154,29 +187,48 @@
 
 (def ^:private review-limite-dia 20)
 
-(defn- registrar-review! [slug body]
+(defn- registrar-review!
+  "`slug` nil = sessão global: a matéria do evento sai da identidade do card."
+  [slug body]
   (let [{:strs [card rating]} (json/parse-string body)]
     (if-not (and (number? card) (#{1 2 3 4} rating))
       {:status 400 :headers {"Content-Type" "text/plain; charset=utf-8"}
        :body "esperava {card: id, rating: 1-4}"}
-      (let [s' (agenda/review! (long card) (long rating) (java.time.Instant/now))]
-        (events/emit! :card-revisado {:subject slug :card (long card) :rating rating})
+      (let [s'   (agenda/review! (long card) (long rating) (java.time.Instant/now))
+            subj (or slug (:subject (agenda/card-info (long card))))]
+        (events/emit! :card-revisado {:subject subj :card (long card) :rating rating})
         {:status 200 :headers {"Content-Type" "application/json; charset=utf-8"}
          :body (json/generate-string {:ok true :proxima (str (:due s'))
                                       :intervalo-dias (:interval-days s')})}))))
 
 (defn- review-routes [req]
   (let [uri (str (:uri req)) method (:request-method req)]
-    (when-let [[_ slug] (re-matches #"/review/([^/]+)" uri)]
+    (cond
+      ;; fila GLOBAL interleaved entre matérias (Fase 2a)
+      (= uri "/review")
       (case method
         :get  (let [now   (java.time.Instant/now)
-                    due   (agenda/due-cards slug now review-limite-dia)
-                    cards (review/carrega-cards slug due)]
-                (html-resp (review/render-html {:subject slug :cards cards
-                                                :stats (agenda/stats slug now)}
-                                               (str "/review/" slug))))
-        :post (registrar-review! slug (slurp (:body req)))
-        nil))))
+                    due   (agenda/due-cards-all now review-limite-dia)
+                    cards (mapv #(assoc % :mat (:subject %))
+                                (review/carrega-cards due))]
+                (html-resp (review/render-html {:subject "todas as matérias"
+                                                :cards cards
+                                                :stats (agenda/stats-all now)}
+                                               "/review")))
+        :post (registrar-review! nil (slurp (:body req)))
+        nil)
+
+      :else
+      (when-let [[_ slug] (re-matches #"/review/([^/]+)" uri)]
+        (case method
+          :get  (let [now   (java.time.Instant/now)
+                      due   (agenda/due-cards slug now review-limite-dia)
+                      cards (review/carrega-cards due)]
+                  (html-resp (review/render-html {:subject slug :cards cards
+                                                  :stats (agenda/stats slug now)}
+                                                 (str "/review/" slug))))
+          :post (registrar-review! slug (slurp (:body req)))
+          nil)))))
 
 (defn- memoria-routes [req]
   (when (= :get (:request-method req))

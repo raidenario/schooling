@@ -5,7 +5,8 @@
 # Ao sair do TUI, derruba o backend SE foi este script que o subiu (um backend
 # que você abriu à mão é reaproveitado e fica de pé).
 #
-# Logs do backend: %LOCALAPPDATA%\school\backend.log
+# Logs do backend: %LOCALAPPDATA%\school\backend-<porta>.log (por porta:
+# duas instâncias em portas diferentes não clobberam o log uma da outra)
 $ErrorActionPreference = "Stop"
 
 $root    = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -53,8 +54,8 @@ if (Test-Porta $port) {
 } else {
   $logDir = Join-Path $env:LOCALAPPDATA "school"
   New-Item -ItemType Directory -Force $logDir | Out-Null
-  $log = Join-Path $logDir "backend.log"
-  $err = Join-Path $logDir "backend.err.log"
+  $log = Join-Path $logDir "backend-$port.log"
+  $err = Join-Path $logDir "backend-$port.err.log"
   Write-Host "· subindo o backend (primeira vez demora MUITO: baixa todas as deps)…" -ForegroundColor DarkGray
   # via wrapper powershell: o `clojure` do scoop pode ser .exe OU .ps1 conforme
   # a versão do manifest — Start-Process só lança executável direto
